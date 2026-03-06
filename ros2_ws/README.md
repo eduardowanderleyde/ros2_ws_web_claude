@@ -227,6 +227,50 @@ Só depois disso: implementar UI (recomendado: Web UI com FastAPI + WebSocket).
 
 ---
 
+## Ordem certa para validar (3 terminais)
+
+O problema agora **não é mais implementação** e sim **execução/validação**: subir os nós na ordem certa antes do teste. Abaixo, a sequência para **TurtleBot 3 + Jazzy + fleet**, pronta para colar.
+
+### Terminal 1 — Simulação (Gazebo + depois SLAM + Nav2)
+
+**1.1 — Mundo e robô no Gazebo (TurtleBot 3):**
+
+```bash
+source /opt/ros/jazzy/setup.bash
+export TURTLEBOT3_MODEL=burger
+ros2 launch turtlebot3_gazebo turtlebot3_world.launch.py
+```
+
+(Outros mundos: `turtlebot3_empty_world.launch.py`, `turtlebot3_house.launch.py` — ver [TurtleBot3 Simulation](https://emanual.robotis.com/docs/en/platform/turtlebot3/simulation/).)
+
+**1.2 — Em outros terminais, subir SLAM e Nav2** (simulação, SLAM e Nav2 costumam ser lançados em etapas separadas). Ex.: `slam_toolbox` ou Cartographer para SLAM; em seguida Nav2 (navigation2). Consultar a doc do TurtleBot3 para ROS 2 Jazzy ([Quick Start](https://emanual.robotis.com/docs/en/platform/turtlebot3/quick-start/)). Só depois disso rodar o fleet.
+
+Se estiver usando outro stack/simulador, troque o launch acima pelo equivalente do seu ambiente; o importante é ter **map**, **base_link** e **/navigate_through_poses** antes do fleet.
+
+### Terminal 2 — Fleet (modo single-robot)
+
+```bash
+cd /home/eduardo/Documentos/ros2_ws/ros2_ws
+source /opt/ros/jazzy/setup.bash
+source install/setup.bash
+ros2 launch fleet_orchestrator fleet.launch.py --params-file install/fleet_orchestrator/share/fleet_orchestrator/config/single_robot_sim.yaml
+```
+
+(Se o path for diferente: `$(ros2 pkg prefix fleet_orchestrator)/share/fleet_orchestrator/config/single_robot_sim.yaml`. Com `--merge-install`, pode ser `install/share/fleet_orchestrator/config/single_robot_sim.yaml`.)
+
+### Terminal 3 — Teste
+
+```bash
+cd /home/eduardo/Documentos/ros2_ws/ros2_ws
+source /opt/ros/jazzy/setup.bash
+source install/setup.bash
+python3 scripts/test_fleet_cases.py --single-robot
+```
+
+**Objetivo:** services disponíveis, `/fleet/status` publicando, start_record gravando pontos, play_route e go_to_point executando, coleta gerando bag válido. Só depois disso começar a UI. Validação manual primeiro; não misturar problema do simulador com problema do fleet.
+
+---
+
 ## O que falta para "terminar"
 
 ### Backend funcional (sem UI)
@@ -245,7 +289,34 @@ Só depois disso: implementar UI (recomendado: Web UI com FastAPI + WebSocket).
 
 ---
 
-## Próximos passos (quando for fazer a UI)
+## Estado do projeto (backend)
 
-- UI (web ou rqt) chama services e assina `/fleet/status`.
-- Recomendado: Web UI (FastAPI + WebSocket) ou `fleet_ui_api` (REST/WebSocket).
+O backend está **documentado e executável**. Inclui: orchestrator, data collector, services completos, `go_to_point`, record/play, error codes, `/fleet/status`, modo single-robot, arquitetura multi-robô, launch, config YAML e script de testes. A separação (robot stack → fleet controller → data collector → UI) está alinhada com sistemas de fleet robotics (Open-RMF, Isaac Mission Dispatch, etc.).
+
+Falta: **(1)** validar o fluxo completo em simulação (os 3 terminais do README); **(2)** depois, criar a UI.
+
+---
+
+## Próximos passos (ordem recomendada)
+
+1. **Validar em simulação** — Rodar os 3 terminais; conferir start_record → mover robô → stop_record → `routes/default/r1.yaml` → list_routes → play_route → go_to_point → enable/disable_collection → `ros2 bag info` → `ros2 topic echo /fleet/status`. Se tudo passar → backend validado.
+2. **Demo em vídeo** — Gravar o sistema funcionando (prova de conceito / portfolio / mestrado).
+3. **UI web** — Implementada em `fleet_ui/`: ver [Fleet UI](#fleet-ui-react--fastapi) abaixo.
+
+---
+
+## Fleet UI (React + FastAPI)
+
+Interface web em `fleet_ui/`: mapa clicável (go_to_point), botões de rota e status ao vivo.
+
+- **Backend**: FastAPI que assina `/fleet/status` (ROS 2) e expõe REST + WebSocket. Rode com o workspace sourceado:
+  ```bash
+  source install/setup.bash
+  pip install -r fleet_ui/backend/requirements.txt   # opcional: venv
+  python fleet_ui/backend/main.py
+  ```
+- **Frontend**: React (Vite) em `fleet_ui/frontend/`. Proxy para API em `localhost:8000`.
+  ```bash
+  cd fleet_ui/frontend && npm install && npm run dev
+  ```
+- Abra http://localhost:5173. Detalhes em `fleet_ui/README.md`.
