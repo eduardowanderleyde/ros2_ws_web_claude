@@ -340,23 +340,39 @@ python3 scripts/test_roles_automatic.py --muut tb1 --fuut tb2 --su tb3
 
 ### Experimento reproduzível (1 robô): gravar percurso → repetir → comparar bags
 
+Script: `scripts/experiment_repeatability.py` (subcomandos `record` e `replay`).
+
 Objetivo: **percurso salvo em YAML** + **duas (ou mais) coletas rosbag2** no mesmo trajeto, para medir repetibilidade — sem UI.
 
-**Fase A — gravar** (coleta ligada + `start_record` + sequência de `go_to_point` + `stop_record`):
+**Multi-robô / namespace** (`tb1`, `tb2`, …):
 
 ```bash
 source install/setup.bash
-python3 scripts/experiment_repetability.py record \
+python3 scripts/experiment_repeatability.py record \
   --robot tb1 --route percurso1_tb1 \
   --points "0.5,0,0;1.0,0,0;1.5,0.5,0;2.0,0.5,0"
+python3 scripts/experiment_repeatability.py replay --robot tb1 --route percurso1_tb1
 ```
 
 Saída esperada: `routes/tb1/percurso1_tb1.yaml` e bag em `collections/tb1/<timestamp>/`.
 
-**Fase B — reproduzir** (nova coleta com `play_route`):
+**Simulação single-robot** (sem namespace: `map`, `base_link`; `robot_id` vazio → pastas `routes/default/`, `collections/default/`):
+
+Use **`--single-robot`** ou **`--robot ""`** (não use `tb1` neste modo):
 
 ```bash
-python3 scripts/experiment_repetability.py replay --robot tb1 --route percurso1_tb1
+python3 scripts/experiment_repeatability.py record --single-robot --route percurso1_tb1 \
+  --points "0.5,0,0;1.0,0,0;1.5,0.5,0;2.0,0.5,0"
+python3 scripts/experiment_repeatability.py replay --single-robot --route percurso1_tb1
+```
+
+**Metadados para dissertação / pós-processamento:** `--export run_1.json` grava JSON com rota esperada, pontos, sucesso e mensagem do `disable_collection` (caminho do bag costuma vir no log).
+
+**Conferir artefatos:**
+
+```bash
+ls routes/default routes/tb1 2>/dev/null; ls collections/default collections/tb1 2>/dev/null
+ros2 bag info collections/default/<pasta>   # ou collections/tb1/...
 ```
 
 Ajuste os pontos (`--points`) ao mapa/mundo (valores no frame `map`). Use `--skip-collection` só para testar navegação sem gravar bag.

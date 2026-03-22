@@ -5,23 +5,32 @@ depois reproduzir a mesma rota com nova coleta — para comparar bags.
 
 Fase A — gravar (coleta + record + waypoints + salvar YAML):
   source install/setup.bash
-  python3 scripts/experiment_repetability.py record \\
+  python3 scripts/experiment_repeatability.py record \\
     --robot tb1 --route percurso1_tb1 \\
     --points "0.5,0,0;1.0,0,0;1.5,0.5,0;2.0,0.5,0"
 
-Fase B — reproduzir (coleta + play_route):
-  python3 scripts/experiment_repetability.py replay --robot tb1 --route percurso1_tb1
+Modo **single-robot** (sim sem namespace, `robot_id` vazio → rotas em `routes/default/`):
+  python3 scripts/experiment_repeatability.py record --single-robot --route percurso1_tb1 \\
+    --points "0.5,0,0;1.0,0,0;1.5,0.5,0;2.0,0.5,0"
+  # ou: --robot ""
 
-Requisitos: sim + Nav2 + fleet (orchestrator + collector), TF map ok, MUUT para movimento.
+Fase B — reproduzir (coleta + play_route):
+  python3 scripts/experiment_repeatability.py replay --robot tb1 --route percurso1_tb1
+
+Requisitos: sim + Nav2 + fleet (orchestrator + collector), TF map ok, papel MUUT para movimento.
 
 Pontos: triples x,y,yaw_rad separados por ';' (yaw pode ser 0).
+
+Opcional: --export run_summary.json (metadados para dissertação / pós-processamento).
 """
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import time
-from typing import List, Optional, Tuple
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional, Tuple
 
 import rclpy
 from rclpy.node import Node
@@ -42,6 +51,11 @@ def _norm_status_id(robot_id: str) -> str:
     return "default" if not robot_id.strip() else robot_id.strip()
 
 
+def _expected_route_yaml_path(robot_id: str, route: str) -> str:
+    key = "default" if not robot_id.strip() else robot_id.strip()
+    return f"routes/{key}/{route}.yaml"
+
+
 def _parse_points(s: str) -> List[Tuple[float, float, float]]:
     out: List[Tuple[float, float, float]] = []
     for part in s.split(";"):
@@ -59,7 +73,7 @@ def _parse_points(s: str) -> List[Tuple[float, float, float]]:
 
 class FleetExperimentNode(Node):
     def __init__(self) -> None:
-        super().__init__("experiment_repetability")
+        super().__init__("experiment_repeatability")
         self.last_status: Optional[FleetStatus] = None
         self.create_subscription(FleetStatus, "fleet/status", self._cb, 10)
 
@@ -100,6 +114,16 @@ def _print(ok: bool, msg: str, detail: str = "") -> None:
     print(f"[{tag}] {msg}{extra}")
 
 
+def _write_export(path: str, payload: Dict[str, Any]) -> None:
+    payload = {
+        **payload,
+        "finished_at": datetime.now(timezone.utc).isoformat(),
+    }
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, ensure_ascii=False)
+    print(f"\n[OK] Resumo exportado: {path}")
+
+
 def cmd_record(args: argparse.Namespace) -> int:
     try:
         points = _parse_points(args.points)
@@ -111,6 +135,7 @@ def cmd_record(args: argparse.Namespace) -> int:
     node = FleetExperimentNode()
     fails = 0
     rid = args.robot
+    disable_msg: Optional[str] = None
 
     try:
         print("\n=== Fase A: gravar percurso (coleta + record + waypoints) ===")
@@ -126,7 +151,24 @@ def cmd_record(args: argparse.Namespace) -> int:
             _print(good, "enable_collection", (resp.message if resp else err))
             fails += int(not good)
             if not good:
-                return 1
+                code = 1
+                if args.export:
+                    _write_export(
+                        args.export,
+                        {
+                            "command": "record",
+                            "robot_id": rid,
+                            "route": args.route,
+                            "expected_route_yaml": _expected_route_yaml_path(rid, args.route),
+                            "points": [list(p) for p in points],
+                            "topics": args.topics,
+                            "skip_collection": args.skip_collection,
+                            "success": False,
+                            "failures_reported": fails,
+                            "disable_collection_message": disable_msg,
+                        },
+                    )
+                return code
             time.sleep(1.0)
 
         req_sr = StartRecord.Request()
@@ -137,7 +179,24 @@ def cmd_record(args: argparse.Namespace) -> int:
         _print(good, "start_record", (resp.message if resp else err))
         fails += int(not good)
         if not good:
-            return 1
+            code = 1
+            if args.export:
+                _write_export(
+                    args.export,
+                    {
+                        "command": "record",
+                        "robot_id": rid,
+                        "route": args.route,
+                        "expected_route_yaml": _expected_route_yaml_path(rid, args.route),
+                        "points": [list(p) for p in points],
+                        "topics": args.topics,
+                        "skip_collection": args.skip_collection,
+                        "success": False,
+                        "failures_reported": fails,
+                        "disable_collection_message": disable_msg,
+                    },
+                )
+            return code
 
         try:
             for i, (x, y, yaw) in enumerate(points, start=1):
@@ -173,9 +232,28 @@ def cmd_record(args: argparse.Namespace) -> int:
             good = ok and resp is not None and resp.success
             _print(good, "disable_collection", (resp.message if resp else err))
             fails += int(not good)
+            if resp is not None:
+                disable_msg = resp.message
 
         print(f"\nResumo: {'sem falhas' if fails == 0 else f'{fails} falha(s)'}")
-        return 0 if fails == 0 else 1
+        code = 0 if fails == 0 else 1
+        if args.export:
+            _write_export(
+                args.export,
+                {
+                    "command": "record",
+                    "robot_id": rid,
+                    "route": args.route,
+                    "expected_route_yaml": _expected_route_yaml_path(rid, args.route),
+                    "points": [list(p) for p in points],
+                    "topics": args.topics,
+                    "skip_collection": args.skip_collection,
+                    "success": code == 0,
+                    "failures_reported": fails,
+                    "disable_collection_message": disable_msg,
+                },
+            )
+        return code
     finally:
         node.destroy_node()
         rclpy.shutdown()
@@ -186,6 +264,7 @@ def cmd_replay(args: argparse.Namespace) -> int:
     node = FleetExperimentNode()
     fails = 0
     rid = args.robot
+    disable_msg: Optional[str] = None
 
     try:
         print("\n=== Fase B: reproduzir percurso (coleta + play_route) ===")
@@ -201,7 +280,23 @@ def cmd_replay(args: argparse.Namespace) -> int:
             _print(good, "enable_collection", (resp.message if resp else err))
             fails += int(not good)
             if not good:
-                return 1
+                code = 1
+                if args.export:
+                    _write_export(
+                        args.export,
+                        {
+                            "command": "replay",
+                            "robot_id": rid,
+                            "route": args.route,
+                            "expected_route_yaml": _expected_route_yaml_path(rid, args.route),
+                            "topics": args.topics,
+                            "skip_collection": args.skip_collection,
+                            "success": False,
+                            "failures_reported": fails,
+                            "disable_collection_message": disable_msg,
+                        },
+                    )
+                return code
             time.sleep(1.0)
 
         req_p = PlayRoute.Request()
@@ -226,12 +321,35 @@ def cmd_replay(args: argparse.Namespace) -> int:
             good = ok and resp is not None and resp.success
             _print(good, "disable_collection", (resp.message if resp else err))
             fails += int(not good)
+            if resp is not None:
+                disable_msg = resp.message
 
         print(f"\nResumo: {'sem falhas' if fails == 0 else f'{fails} falha(s)'}")
-        return 0 if fails == 0 else 1
+        code = 0 if fails == 0 else 1
+        if args.export:
+            _write_export(
+                args.export,
+                {
+                    "command": "replay",
+                    "robot_id": rid,
+                    "route": args.route,
+                    "expected_route_yaml": _expected_route_yaml_path(rid, args.route),
+                    "topics": args.topics,
+                    "skip_collection": args.skip_collection,
+                    "success": code == 0,
+                    "failures_reported": fails,
+                    "disable_collection_message": disable_msg,
+                },
+            )
+        return code
     finally:
         node.destroy_node()
         rclpy.shutdown()
+
+
+def _apply_single_robot(args: argparse.Namespace) -> None:
+    if getattr(args, "single_robot", False):
+        args.robot = ""
 
 
 def main() -> int:
@@ -241,7 +359,12 @@ def main() -> int:
     sub = p.add_subparsers(dest="command", required=True)
 
     pr = sub.add_parser("record", help="Coleta + start_record + sequência go_to_point + stop_record")
-    pr.add_argument("--robot", default="tb1", help="robot_id (vazio = modo single-robot sim)")
+    pr.add_argument("--robot", default="tb1", help="robot_id (use '' ou --single-robot para sim sem namespace)")
+    pr.add_argument(
+        "--single-robot",
+        action="store_true",
+        help="Força robot_id vazio (rotas/bags em routes/default, collections/default)",
+    )
     pr.add_argument("--route", default="percurso1_tb1", help="nome da rota YAML (sem .yaml)")
     pr.add_argument(
         "--points",
@@ -256,17 +379,25 @@ def main() -> int:
     )
     pr.add_argument("--wait-goal", type=float, default=120.0, help="Timeout por goal (s)")
     pr.add_argument("--skip-collection", action="store_true", help="Só record/play sem rosbag")
+    pr.add_argument(
+        "--export",
+        metavar="FILE.json",
+        help="Salva metadados do run (rota esperada, pontos, sucesso, mensagem disable_collection)",
+    )
     pr.set_defaults(func=cmd_record)
 
     pb = sub.add_parser("replay", help="Coleta + play_route da rota salva")
     pb.add_argument("--robot", default="tb1")
+    pb.add_argument("--single-robot", action="store_true", help="Força robot_id vazio")
     pb.add_argument("--route", default="percurso1_tb1")
     pb.add_argument("--topics", nargs="+", default=["scan", "odom", "imu"])
     pb.add_argument("--wait-goal", type=float, default=300.0, help="Timeout da rota completa (s)")
     pb.add_argument("--skip-collection", action="store_true")
+    pb.add_argument("--export", metavar="FILE.json", help="Salva metadados do run")
     pb.set_defaults(func=cmd_replay)
 
     args = p.parse_args()
+    _apply_single_robot(args)
     return args.func(args)
 
 
