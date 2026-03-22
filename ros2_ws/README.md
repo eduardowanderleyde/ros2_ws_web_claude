@@ -97,7 +97,7 @@ Se o simulador usa `map`, `base_link` e `/navigate_through_poses` (sem prefixo t
 
 Os services retornam `success`, `message` e **`error_code`** (string; vazio se ok). A UI pode tratar por código:
 
-- **Orchestrator:** `UNKNOWN_ROBOT`, `ALREADY_NAVIGATING`, `ALREADY_RECORDING`, `ROUTE_NOT_FOUND`, `NAV2_UNAVAILABLE`, `NAV2_REJECTED`, `TF_MISSING`, `CANCEL_FAILED`
+- **Orchestrator:** `UNKNOWN_ROBOT`, `ALREADY_NAVIGATING`, `ALREADY_RECORDING`, `ROUTE_NOT_FOUND`, `NAV2_UNAVAILABLE`, `NAV2_REJECTED`, `TF_MISSING`, `ROLE_NOT_ALLOWED` (movimento só para papel **MUUT**), `CANCEL_FAILED`
 - **Collector:** `UNKNOWN_ROBOT`, `ALREADY_COLLECTING`, `UNSUPPORTED_OUTPUT_MODE`, `NO_VALID_TOPICS`, `BAG_PATH_EXISTS`, `ENABLE_FAILED`, `DISABLE_FAILED`
 
 O tópico `/fleet/status` inclui `last_error` (código ou vazio) e `nav_state=failed` quando há erro (ex.: TF ausente, Nav2 rejeitou).
@@ -106,7 +106,7 @@ O tópico `/fleet/status` inclui `last_error` (código ou vazio) e `nav_state=fa
 
 O orchestrator publica **`/fleet/status`** (tipo `fleet_msgs/msg/FleetStatus`) a 1 Hz com estado agregado por robô:
 
-- `robot_id`, `nav_state` (idle | recording | navigating | failed), `current_route`
+- `robot_id`, **`role`** (MUUT | FUUT | SU), `nav_state` (idle | recording | navigating | failed), `current_route`
 - `collection_on`, `collection_file`, `bytes_written`, `last_error`
 
 A UI pode **assinar só esse tópico** e chamar services quando o usuário agir; evita polling em vários services.
@@ -253,10 +253,10 @@ Se estiver usando outro stack/simulador, troque o launch acima pelo equivalente 
 cd /home/eduardo/Documentos/ros2_ws/ros2_ws
 source /opt/ros/jazzy/setup.bash
 source install/setup.bash
-ros2 launch fleet_orchestrator fleet.launch.py --params-file install/fleet_orchestrator/share/fleet_orchestrator/config/single_robot_sim.yaml
+ros2 launch fleet_orchestrator fleet.launch.py use_shared_map_frame:=true
 ```
 
-(Se o path for diferente: `$(ros2 pkg prefix fleet_orchestrator)/share/fleet_orchestrator/config/single_robot_sim.yaml`. Com `--merge-install`, pode ser `install/share/fleet_orchestrator/config/single_robot_sim.yaml`.)
+Para `robots: ['']` e demais parâmetros do arquivo `fleet_orchestrator/config/single_robot_sim.yaml`, passe-os nos nós com `ros2 run ... --ros-args --params-file $(ros2 pkg prefix fleet_orchestrator)/share/fleet_orchestrator/config/single_robot_sim.yaml` ou ajuste o `fleet.launch.py` para incluir esse YAML (o `ros2 launch` não aceita `--params-file` como flag global da mesma forma que `ros2 run`).
 
 ### Terminal 3 — Teste
 
@@ -268,6 +268,75 @@ python3 scripts/test_fleet_cases.py --single-robot
 ```
 
 **Objetivo:** services disponíveis, `/fleet/status` publicando, start_record gravando pontos, play_route e go_to_point executando, coleta gerando bag válido. Só depois disso começar a UI. Validação manual primeiro; não misturar problema do simulador com problema do fleet.
+
+### Caminho 3 — Multi-robô (3× TurtleBot3 com namespaces `tb1`, `tb2`, `tb3`)
+
+Use este fluxo para **validar papéis MUUT / FUUT / SU de verdade** com o mesmo hardware (TurtleBot3), **um namespace por robô**. A distinção é o **papel** (`roles.yaml`), não o modelo.
+
+**O que você precisa no ROS 2 antes do fleet**
+
+- Cada robô publica TF no seu namespace: `tbX/map`, `tbX/odom`, `tbX/base_link`.
+- Nav2 por robô: action `/tbX/navigate_through_poses`.
+- Tópicos de sensores: `/tbX/scan`, `/tbX/odom`, …
+
+O pacote oficial do TurtleBot3 costuma trazer **um robô** por launch. Para **três robôs nomeados** no Gazebo, é comum usar um projeto de sim multi-robô (ex.: comunidade [`tb3_multi_robot`](https://github.com/arshadlab/tb3_multi_robot) / `turtlebot3_multi_robot`) ou um launch seu que:
+
+- instancia 3 modelos com `namespace=tb1|tb2|tb3`,
+- evita colisão de nomes em `/tf` e nos tópicos.
+
+**Papéis (já no repositório)**
+
+Arquivo: `src/fleet_orchestrator/config/roles.yaml` (instalado em `share/fleet_orchestrator/config/roles.yaml`).
+
+| ID   | Papel | Movimento no fleet |
+|------|-------|---------------------|
+| tb1  | MUUT  | permitido (record, play, go_to_point) |
+| tb2  | FUUT  | bloqueado no orchestrator (`ROLE_NOT_ALLOWED`); só coleta |
+| tb3  | SU    | idem FUUT; papel lógico de infra/rede no experimento |
+
+**FUUT/SU no Gazebo:** fisicamente o modelo pode se mover se você aplicar velocidade fora do fleet; o **fleet** só **não envia** goals Nav2 para esses IDs. No experimento, você deixa esses robôs parados (teleop zero / sem cmd_vel).
+
+**Terminal 1 — Simulação + SLAM/Nav2 para os 3 namespaces**
+
+Suba **o seu** launch multi-robô (3 namespaces) + stacks de localização/navegação até existirem, para cada `tbX`:
+
+```bash
+ros2 action list | grep navigate_through_poses
+# esperado: /tb1/navigate_through_poses, /tb2/..., /tb3/...
+```
+
+**Terminal 2 — Fleet (multi-mapa: um mapa por robô)**
+
+Use `use_shared_map_frame:=false` (padrão) para TF `tbX/map` → `tbX/base_link`:
+
+```bash
+cd /home/eduardo/Documentos/ros2_ws/ros2_ws
+source /opt/ros/jazzy/setup.bash
+source install/setup.bash
+ros2 launch fleet_orchestrator fleet.launch.py use_shared_map_frame:=false
+```
+
+(O launch já define `robots: [tb1, tb2, tb3]` e o orchestrator carrega `config/roles.yaml`.)
+
+**Validação rápida (TF + status)**
+
+```bash
+ros2 run tf2_ros tf2_echo tb1/map tb1/base_link
+ros2 run tf2_ros tf2_echo tb2/map tb2/base_link
+ros2 run tf2_ros tf2_echo tb3/map tb3/base_link
+ros2 topic echo /fleet/status --once
+```
+
+**Terminal 3 — Teste automático por papéis (sem UI)**
+
+```bash
+cd /home/eduardo/Documentos/ros2_ws/ros2_ws
+source /opt/ros/jazzy/setup.bash
+source install/setup.bash
+python3 scripts/test_roles_automatic.py --muut tb1 --fuut tb2 --su tb3
+```
+
+**Obs. DDS:** com vários participantes no mesmo host, às vezes é preciso ajustar CycloneDDS/Fast-DDS (limites de participantes); se um robô “some” do `ros2 node list`, verifique isso antes de culpar o fleet.
 
 ### Teste automático por papéis (MUUT/FUUT/SU), sem UI
 

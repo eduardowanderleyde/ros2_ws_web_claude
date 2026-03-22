@@ -92,7 +92,8 @@ class FleetOrchestrator(Node):
         # Se False: usa "tbX/map" por robô (multi-mapa).
         self.declare_parameter("use_shared_map_frame", False)
         # YAML opcional com roles (MUUT/FUUT/SU) por robô
-        self.declare_parameter("roles_config", "src/fleet_orchestrator/config/roles.yaml")
+        # Relativo à raiz do pacote fleet_orchestrator (onde está config/roles.yaml)
+        self.declare_parameter("roles_config", "config/roles.yaml")
 
         self.robots: List[str] = self.get_parameter("robots").value
         self.routes_dir: str = self.get_parameter("routes_dir").value
@@ -159,10 +160,24 @@ class FleetOrchestrator(Node):
             return roles
         try:
             if not os.path.isabs(path):
-                # relativo ao workspace ou ao pacote
+                # Desenvolvimento: .../src/fleet_orchestrator/config/roles.yaml
                 base = os.path.dirname(os.path.dirname(__file__))
-                path = os.path.join(base, "..", path)
-                path = os.path.abspath(path)
+                candidate = os.path.abspath(os.path.join(base, path))
+                if os.path.exists(candidate):
+                    path = candidate
+                else:
+                    # Instalado: .../share/fleet_orchestrator/config/roles.yaml
+                    try:
+                        from ament_index_python.packages import get_package_share_directory
+
+                        share = get_package_share_directory("fleet_orchestrator")
+                        alt = os.path.join(share, path)
+                        if os.path.exists(alt):
+                            path = alt
+                        else:
+                            path = candidate
+                    except Exception:
+                        path = candidate
             if not os.path.exists(path):
                 self.get_logger().warn(f"roles_config não encontrado: {path}")
                 return roles
