@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 import time
 from datetime import datetime, timezone
@@ -35,8 +36,10 @@ from typing import Any, Dict, List, Optional, Tuple
 import rclpy
 from rclpy.node import Node
 from rclpy.duration import Duration
+from rclpy.parameter import Parameter
 from rclpy.time import Time
 from tf2_ros import Buffer, TransformListener, TransformException
+from nav_msgs.msg import Odometry
 
 from fleet_msgs.msg import FleetStatus
 from fleet_msgs.srv import (
@@ -75,15 +78,25 @@ def _parse_points(s: str) -> List[Tuple[float, float, float]]:
 
 
 class FleetExperimentNode(Node):
-    def __init__(self) -> None:
-        super().__init__("experiment_repeatability")
+    def __init__(self, *, use_sim_time: bool = True) -> None:
+        super().__init__(
+            "experiment_repeatability",
+            parameter_overrides=[
+                Parameter("use_sim_time", Parameter.Type.BOOL, use_sim_time),
+            ],
+        )
         self.last_status: Optional[FleetStatus] = None
+        self.last_odom: Optional[Odometry] = None
         self.create_subscription(FleetStatus, "fleet/status", self._cb, 10)
+        self.create_subscription(Odometry, "odom", self._cb_odom, 30)
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
     def _cb(self, msg: FleetStatus) -> None:
         self.last_status = msg
+
+    def _cb_odom(self, msg: Odometry) -> None:
+        self.last_odom = msg
 
     def call_srv(self, srv_type, name: str, request, timeout_sec: float = 15.0):
         cli = self.create_client(srv_type, name)
@@ -131,6 +144,40 @@ class FleetExperimentNode(Node):
             rclpy.spin_once(self, timeout_sec=0.1)
         return False
 
+    def wait_motion_detected(self, min_dist_m: float, timeout_sec: float) -> Tuple[bool, float]:
+        """
+        Aguarda deslocamento no /odom e retorna (ok, path_length_m_estimate).
+        path_length_m_estimate é a distância acumulada entre amostras de odom.
+        """
+        t0 = time.time()
+        prev_xy: Optional[Tuple[float, float]] = None
+        path_acc = 0.0
+
+        # Tenta capturar uma amostra inicial rapidamente.
+        while self.last_odom is None and (time.time() - t0) < min(2.0, timeout_sec):
+            rclpy.spin_once(self, timeout_sec=0.1)
+
+        if self.last_odom is not None:
+            p = self.last_odom.pose.pose.position
+            prev_xy = (float(p.x), float(p.y))
+
+        while time.time() - t0 < timeout_sec:
+            rclpy.spin_once(self, timeout_sec=0.1)
+            if self.last_odom is None:
+                continue
+            p = self.last_odom.pose.pose.position
+            cur_xy = (float(p.x), float(p.y))
+            if prev_xy is None:
+                prev_xy = cur_xy
+                continue
+            step = math.hypot(cur_xy[0] - prev_xy[0], cur_xy[1] - prev_xy[1])
+            if step > 0.0:
+                path_acc += step
+                prev_xy = cur_xy
+            if path_acc >= min_dist_m:
+                return True, path_acc
+        return False, path_acc
+
 
 def _print(ok: bool, msg: str, detail: str = "") -> None:
     tag = "OK" if ok else "FALHOU"
@@ -164,10 +211,12 @@ def cmd_record(args: argparse.Namespace) -> int:
         return 2
 
     rclpy.init()
-    node = FleetExperimentNode()
+    node = FleetExperimentNode(use_sim_time=not args.no_use_sim_time)
     fails = 0
     rid = args.robot
     disable_msg: Optional[str] = None
+    run_error_code = ""
+    path_length_m_estimate = 0.0
 
     try:
         print("\n=== Fase A: gravar percurso (coleta + record + waypoints) ===")
@@ -257,6 +306,20 @@ def cmd_record(args: argparse.Namespace) -> int:
                 nav_started = node.wait_nav_state(rid, "navigating", timeout_sec=12.0)
                 _print(nav_started, f"wp{i} estado navigating")
                 fails += int(not nav_started)
+                if args.require_motion and nav_started:
+                    moved, dist_m = node.wait_motion_detected(
+                        min_dist_m=args.motion_min_dist,
+                        timeout_sec=args.motion_timeout,
+                    )
+                    path_length_m_estimate = max(path_length_m_estimate, dist_m)
+                    detail = (
+                        f"dist_est={dist_m:.3f}m (mín={args.motion_min_dist:.3f}m em {args.motion_timeout:.1f}s)"
+                    )
+                    _print(moved, f"wp{i} movimento detectado", detail)
+                    if not moved:
+                        fails += 1
+                        run_error_code = "NO_MOTION_DETECTED"
+                        break
                 # Durante record, o fleet mostra `recording` enquanto a coleta está ativa.
                 # Depois que o Nav2 termina, `is_navigating` vira False, mas `is_recording`
                 # permanece True até o stop_record. Por isso "idle" pode nunca acontecer aqui.
@@ -297,6 +360,8 @@ def cmd_record(args: argparse.Namespace) -> int:
                     "skip_collection": args.skip_collection,
                     "success": code == 0,
                     "failures_reported": fails,
+                    "error_code": run_error_code,
+                    "path_length_m_estimate": path_length_m_estimate,
                     "disable_collection_message": disable_msg,
                     "rosbag_path": _rosbag_path_from_disable_message(disable_msg),
                 },
@@ -309,10 +374,12 @@ def cmd_record(args: argparse.Namespace) -> int:
 
 def cmd_replay(args: argparse.Namespace) -> int:
     rclpy.init()
-    node = FleetExperimentNode()
+    node = FleetExperimentNode(use_sim_time=not args.no_use_sim_time)
     fails = 0
     rid = args.robot
     disable_msg: Optional[str] = None
+    run_error_code = ""
+    path_length_m_estimate = 0.0
 
     try:
         print("\n=== Fase B: reproduzir percurso (coleta + play_route) ===")
@@ -365,6 +432,19 @@ def cmd_replay(args: argparse.Namespace) -> int:
             nav_started = node.wait_nav_state(rid, "navigating", timeout_sec=15.0)
             _print(nav_started, "navegação iniciou (navigating)")
             fails += int(not nav_started)
+            if args.require_motion and nav_started:
+                moved, dist_m = node.wait_motion_detected(
+                    min_dist_m=args.motion_min_dist,
+                    timeout_sec=args.motion_timeout,
+                )
+                path_length_m_estimate = max(path_length_m_estimate, dist_m)
+                detail = (
+                    f"dist_est={dist_m:.3f}m (mín={args.motion_min_dist:.3f}m em {args.motion_timeout:.1f}s)"
+                )
+                _print(moved, "movimento detectado", detail)
+                if not moved:
+                    fails += 1
+                    run_error_code = "NO_MOTION_DETECTED"
             nav_done = node.wait_nav_state(rid, "idle", timeout_sec=args.wait_goal)
             _print(nav_done, "navegação terminou (idle)")
             fails += int(not nav_done)
@@ -394,6 +474,8 @@ def cmd_replay(args: argparse.Namespace) -> int:
                     "skip_collection": args.skip_collection,
                     "success": code == 0,
                     "failures_reported": fails,
+                    "error_code": run_error_code,
+                    "path_length_m_estimate": path_length_m_estimate,
                     "disable_collection_message": disable_msg,
                     "rosbag_path": _rosbag_path_from_disable_message(disable_msg),
                 },
@@ -435,6 +517,18 @@ def main() -> int:
         help="Tópicos relativos ao namespace do robô",
     )
     pr.add_argument("--wait-goal", type=float, default=120.0, help="Timeout por goal (s)")
+    pr.add_argument(
+        "--no-use-sim-time",
+        action="store_true",
+        help="Relógio de parede (sem /clock). Em Gazebo+Nav2 omita esta flag.",
+    )
+    pr.add_argument(
+        "--require-motion",
+        action="store_true",
+        help="Falha cedo se não detectar deslocamento mínimo no /odom após iniciar navegação",
+    )
+    pr.add_argument("--motion-min-dist", type=float, default=0.10, help="Deslocamento mínimo (m)")
+    pr.add_argument("--motion-timeout", type=float, default=10.0, help="Janela para detectar movimento (s)")
     pr.add_argument("--skip-collection", action="store_true", help="Só record/play sem rosbag")
     pr.add_argument(
         "--export",
@@ -449,6 +543,18 @@ def main() -> int:
     pb.add_argument("--route", default="percurso1_tb1")
     pb.add_argument("--topics", nargs="+", default=["scan", "odom", "imu"])
     pb.add_argument("--wait-goal", type=float, default=300.0, help="Timeout da rota completa (s)")
+    pb.add_argument(
+        "--no-use-sim-time",
+        action="store_true",
+        help="Relógio de parede (sem /clock). Em Gazebo+Nav2 omita esta flag.",
+    )
+    pb.add_argument(
+        "--require-motion",
+        action="store_true",
+        help="Falha cedo se não detectar deslocamento mínimo no /odom após iniciar navegação",
+    )
+    pb.add_argument("--motion-min-dist", type=float, default=0.10, help="Deslocamento mínimo (m)")
+    pb.add_argument("--motion-timeout", type=float, default=10.0, help="Janela para detectar movimento (s)")
     pb.add_argument("--skip-collection", action="store_true")
     pb.add_argument("--export", metavar="FILE.json", help="Salva metadados do run")
     pb.set_defaults(func=cmd_replay)
