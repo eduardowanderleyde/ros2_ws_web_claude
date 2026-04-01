@@ -18,6 +18,7 @@ Fase B — reproduzir (coleta + play_route):
   python3 scripts/experiment_repeatability.py replay --robot tb1 --route percurso1_tb1
   No replay, se /fleet/status (~1 Hz) não mostrar "navigating" a tempo, há fallback seguro
   (inferência após settle) para replays muito rápidos; ver --replay-nav-start-timeout.
+  O replay não cria TransformListener (só o record precisa de TF), para menos WARNs TF_OLD_DATA.
 
 Requisitos: sim + Nav2 + fleet (orchestrator + collector), TF map ok, papel MUUT para movimento.
 
@@ -81,7 +82,7 @@ def _parse_points(s: str) -> List[Tuple[float, float, float]]:
 
 
 class FleetExperimentNode(Node):
-    def __init__(self, *, use_sim_time: bool = True) -> None:
+    def __init__(self, *, use_sim_time: bool = True, enable_tf: bool = True) -> None:
         super().__init__(
             "experiment_repeatability",
             parameter_overrides=[
@@ -95,8 +96,12 @@ class FleetExperimentNode(Node):
         self.create_subscription(
             Odometry, "odom", self._cb_odom, qos_profile_sensor_data
         )
-        self.tf_buffer = Buffer()
-        self.tf_listener = TransformListener(self.tf_buffer, self)
+        # Replay não usa TF; omitir TransformListener reduz carga e WARNs TF_OLD_DATA no tf2.
+        self.tf_buffer: Optional[Buffer] = None
+        self.tf_listener: Optional[TransformListener] = None
+        if enable_tf:
+            self.tf_buffer = Buffer()
+            self.tf_listener = TransformListener(self.tf_buffer, self)
 
     def _cb(self, msg: FleetStatus) -> None:
         self.last_status = msg
@@ -159,6 +164,8 @@ class FleetExperimentNode(Node):
         self, global_frame: str, base_frame: str, timeout_sec: float
     ) -> bool:
         """Espera até existir TF global_frame -> base_frame (transform mais recente)."""
+        if self.tf_buffer is None:
+            return False
         t0 = time.time()
         while time.time() - t0 < timeout_sec:
             try:
@@ -251,7 +258,10 @@ def cmd_record(args: argparse.Namespace) -> int:
         return 2
 
     rclpy.init()
-    node = FleetExperimentNode(use_sim_time=not args.no_use_sim_time)
+    node = FleetExperimentNode(
+        use_sim_time=not args.no_use_sim_time,
+        enable_tf=True,
+    )
     fails = 0
     rid = args.robot
     disable_msg: Optional[str] = None
@@ -414,7 +424,10 @@ def cmd_record(args: argparse.Namespace) -> int:
 
 def cmd_replay(args: argparse.Namespace) -> int:
     rclpy.init()
-    node = FleetExperimentNode(use_sim_time=not args.no_use_sim_time)
+    node = FleetExperimentNode(
+        use_sim_time=not args.no_use_sim_time,
+        enable_tf=False,
+    )
     fails = 0
     rid = args.robot
     disable_msg: Optional[str] = None
