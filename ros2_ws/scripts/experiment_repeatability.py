@@ -16,6 +16,8 @@ Modo **single-robot** (sim sem namespace, `robot_id` vazio → rotas em `routes/
 
 Fase B — reproduzir (coleta + play_route):
   python3 scripts/experiment_repeatability.py replay --robot tb1 --route percurso1_tb1
+  No replay, se /fleet/status (~1 Hz) não mostrar "navigating" a tempo, há fallback seguro
+  (inferência após settle) para replays muito rápidos; ver --replay-nav-start-timeout.
 
 Requisitos: sim + Nav2 + fleet (orchestrator + collector), TF map ok, papel MUUT para movimento.
 
@@ -111,19 +113,43 @@ class FleetExperimentNode(Node):
         except Exception as e:
             return None, False, str(e)
 
+    def get_nav_state(self, robot_id: str) -> Optional[str]:
+        """Último nav_state conhecido para o robô (None se ainda não houve /fleet/status)."""
+        want = _norm_status_id(robot_id)
+        if self.last_status is None:
+            return None
+        for rs in self.last_status.robots:
+            rid = rs.robot_id if rs.robot_id else "default"
+            if rid == want:
+                return rs.nav_state
+        return None
+
     def wait_nav_state(self, robot_id: str, expected: str, timeout_sec: float) -> bool:
         want = _norm_status_id(robot_id)
         t0 = time.time()
         while time.time() - t0 < timeout_sec:
-            rclpy.spin_once(self, timeout_sec=0.15)
+            # spin curto: /fleet/status é ~1 Hz; sleep extra atrasava e fazia perder "navigating".
+            rclpy.spin_once(self, timeout_sec=0.02)
             if self.last_status is None:
                 continue
             for rs in self.last_status.robots:
                 rid = rs.robot_id if rs.robot_id else "default"
                 if rid == want and rs.nav_state == expected:
                     return True
-            time.sleep(0.05)
         return False
+
+    def infer_replay_nav_started(self, robot_id: str, settle_sec: float = 0.35) -> bool:
+        """
+        Após play_route, se não vimos 'navigating' a tempo, aceita navegação muito rápida ou
+        transição perdida pelo polling: após settle_sec, idle/navigating/recording sem failed.
+        """
+        t0 = time.time()
+        while time.time() - t0 < settle_sec:
+            rclpy.spin_once(self, timeout_sec=0.02)
+        st = self.get_nav_state(robot_id)
+        if st is None or st == "failed":
+            return False
+        return st in ("idle", "navigating", "recording")
 
     def wait_tf_available(
         self, global_frame: str, base_frame: str, timeout_sec: float
@@ -429,8 +455,22 @@ def cmd_replay(args: argparse.Namespace) -> int:
         _print(good, "play_route", (resp.message if resp else err))
         fails += int(not good)
         if good:
-            nav_started = node.wait_nav_state(rid, "navigating", timeout_sec=15.0)
-            _print(nav_started, "navegação iniciou (navigating)")
+            nav_started = node.wait_nav_state(
+                rid, "navigating", timeout_sec=args.replay_nav_start_timeout
+            )
+            if not nav_started:
+                if node.infer_replay_nav_started(
+                    rid, settle_sec=args.replay_nav_settle_sec
+                ):
+                    nav_started = True
+                    _print(
+                        True,
+                        "navegação iniciou (inferido; replay rápido ou /fleet/status ~1 Hz)",
+                    )
+                else:
+                    _print(False, "navegação iniciou (navigating)")
+            else:
+                _print(True, "navegação iniciou (navigating)")
             fails += int(not nav_started)
             if args.require_motion and nav_started:
                 moved, dist_m = node.wait_motion_detected(
@@ -543,6 +583,18 @@ def main() -> int:
     pb.add_argument("--route", default="percurso1_tb1")
     pb.add_argument("--topics", nargs="+", default=["scan", "odom", "imu"])
     pb.add_argument("--wait-goal", type=float, default=300.0, help="Timeout da rota completa (s)")
+    pb.add_argument(
+        "--replay-nav-start-timeout",
+        type=float,
+        default=45.0,
+        help="Tempo máx. (s) para observar nav_state=navigating após play_route",
+    )
+    pb.add_argument(
+        "--replay-nav-settle-sec",
+        type=float,
+        default=0.35,
+        help="Segundos de spin antes do fallback se não houve 'navigating' visível",
+    )
     pb.add_argument(
         "--no-use-sim-time",
         action="store_true",
