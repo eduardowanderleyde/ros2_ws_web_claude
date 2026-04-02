@@ -3,17 +3,21 @@
 from __future__ import annotations
 
 import os
+import threading
 import traceback
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple, Type
 
 import rclpy
+from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.serialization import serialize_message
 
 from sensor_msgs.msg import LaserScan, Imu
 from nav_msgs.msg import Odometry
+from geometry_msgs.msg import PoseWithCovarianceStamped
 
 import rosbag2_py
 
@@ -25,10 +29,31 @@ from fleet_msgs.srv import (
 
 
 # Topic short name (relative to robot namespace) -> (Python msg type, rosbag2 type string)
+def _subscription_qos(short_name: str):
+    """QoS por tópico.
+
+    Nav2 AMCL (Jazzy): ``create_publisher(..., QoS(KeepLast(1)).transient_local().reliable())``.
+    Subscritor **volatile** pode não receber nada no Fast DDS; usar **transient_local**
+    igual ao publisher. ``depth`` > 1 para não perder rajadas entre callbacks.
+    """
+    if short_name == "amcl_pose":
+        return QoSProfile(
+            depth=50,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            history=HistoryPolicy.KEEP_LAST,
+        )
+    return 10
+
+
 KNOWN_TOPICS: Dict[str, Tuple[Type[Any], str]] = {
     "scan": (LaserScan, "sensor_msgs/msg/LaserScan"),
     "odom": (Odometry, "nav_msgs/msg/Odometry"),
     "imu": (Imu, "sensor_msgs/msg/Imu"),
+    "amcl_pose": (
+        PoseWithCovarianceStamped,
+        "geometry_msgs/msg/PoseWithCovarianceStamped",
+    ),
 }
 
 
@@ -36,6 +61,7 @@ KNOWN_TOPICS: Dict[str, Tuple[Type[Any], str]] = {
 class RobotCollectionState:
     enabled: bool = False
     writer: Optional[Any] = None  # rosbag2_py.SequentialWriter
+    write_lock: threading.Lock = field(default_factory=threading.Lock)
     subscriptions: List[Any] = field(default_factory=list)
     current_bag_uri: str = ""
     topics: List[str] = field(default_factory=list)
@@ -55,6 +81,7 @@ def _bag_bytes(bag_uri: str) -> int:
 class SensorCollector(Node):
     def __init__(self) -> None:
         super().__init__("sensor_collector")
+        self._collection_cbg = ReentrantCallbackGroup()
 
         self.declare_parameter("robots", ["tb1", "tb2", "tb3"])
         self.declare_parameter("collections_dir", "collections")
@@ -163,9 +190,19 @@ class SensorCollector(Node):
                 return response
 
             subs = []
-            for full_name, msg_type, _ in topic_meta:
+            for (full_name, msg_type, _), short in zip(
+                topic_meta,
+                [t for t in topics if t in KNOWN_TOPICS],
+            ):
                 cb = self._make_write_cb(robot_id, full_name, writer)
-                sub = self.create_subscription(msg_type, full_name, cb, 10)
+                qos = _subscription_qos(short)
+                sub = self.create_subscription(
+                    msg_type,
+                    full_name,
+                    cb,
+                    qos,
+                    callback_group=self._collection_cbg,
+                )
                 subs.append(sub)
 
             state.enabled = True
@@ -203,11 +240,12 @@ class SensorCollector(Node):
             if not state or not state.enabled or state.writer is None:
                 return
             try:
-                state.writer.write(
-                    topic_name,
-                    serialize_message(msg),
-                    self.get_clock().now().nanoseconds,
-                )
+                with state.write_lock:
+                    state.writer.write(
+                        topic_name,
+                        serialize_message(msg),
+                        self.get_clock().now().nanoseconds,
+                    )
             except Exception as ex:
                 self.get_logger().error(f"Write failed [{topic_name}]: {ex}")
 
@@ -273,13 +311,18 @@ class SensorCollector(Node):
 
 
 def main(args=None) -> None:
+    from rclpy.executors import MultiThreadedExecutor
+
     rclpy.init(args=args)
     node = SensorCollector()
+    executor = MultiThreadedExecutor(num_threads=4)
+    executor.add_node(node)
     try:
-        rclpy.spin(node)
+        executor.spin()
     except KeyboardInterrupt:
         node.get_logger().info("Shutting down (KeyboardInterrupt).")
     finally:
+        executor.shutdown()
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()

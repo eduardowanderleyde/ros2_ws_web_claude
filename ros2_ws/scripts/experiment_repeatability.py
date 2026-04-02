@@ -279,6 +279,46 @@ def _rosbag_path_from_disable_message(msg: Optional[str]) -> Optional[str]:
     return tail if tail else None
 
 
+def _enable_collection_with_recovery(
+    node: FleetExperimentNode,
+    req: EnableCollection.Request,
+) -> Tuple[Optional[Any], bool, str, bool]:
+    """enable_collection; se ALREADY_COLLECTING, faz disable no mesmo robot_id e tenta outra vez."""
+    resp, ok, err = node.call_srv(EnableCollection, "enable_collection", req)
+    good = ok and resp is not None and resp.success
+    if good:
+        return resp, ok, err, True
+
+    stuck = False
+    if ok and resp is not None:
+        code = (getattr(resp, "error_code", None) or "").strip()
+        stuck = code == "ALREADY_COLLECTING"
+        if not stuck:
+            low = (resp.message or "").lower()
+            stuck = "already enabled" in low and "disable" in low
+
+    if not stuck:
+        return resp, ok, err, False
+
+    print("[TRACE] Coleta já ativa — disable_collection e novo enable_collection ...")
+    req_d = DisableCollection.Request()
+    req_d.robot_id = req.robot_id
+    resp_d, ok_d, err_d = node.call_srv(DisableCollection, "disable_collection", req_d)
+    dgood = ok_d and resp_d is not None and resp_d.success
+    _print(
+        dgood,
+        "disable_collection (antes de reativar coleta)",
+        (resp_d.message if resp_d else err_d),
+    )
+    if not dgood:
+        return resp, ok, err, False
+
+    time.sleep(0.5)
+    resp2, ok2, err2 = node.call_srv(EnableCollection, "enable_collection", req)
+    good2 = ok2 and resp2 is not None and resp2.success
+    return resp2, ok2, err2, good2
+
+
 def _write_export(
     path: str,
     payload: Dict[str, Any],
@@ -338,8 +378,7 @@ def cmd_record(args: argparse.Namespace) -> int:
             req.topics = args.topics
             req.output_mode = "rosbag2"
             print("[TRACE] Chamando service enable_collection ...")
-            resp, ok, err = node.call_srv(EnableCollection, "enable_collection", req)
-            good = ok and resp is not None and resp.success
+            resp, ok, err, good = _enable_collection_with_recovery(node, req)
             _print(good, "enable_collection", (resp.message if resp else err))
             fails += int(not good)
             if not good:
@@ -520,8 +559,7 @@ def cmd_replay(args: argparse.Namespace) -> int:
             req.topics = args.topics
             req.output_mode = "rosbag2"
             print("[TRACE] Chamando service enable_collection ...")
-            resp, ok, err = node.call_srv(EnableCollection, "enable_collection", req)
-            good = ok and resp is not None and resp.success
+            resp, ok, err, good = _enable_collection_with_recovery(node, req)
             _print(good, "enable_collection", (resp.message if resp else err))
             fails += int(not good)
             if not good:
@@ -679,7 +717,7 @@ def main() -> int:
     pr.add_argument(
         "--topics",
         nargs="+",
-        default=["scan", "odom", "imu"],
+        default=["scan", "odom", "imu", "amcl_pose"],
         help="Tópicos relativos ao namespace do robô",
     )
     pr.add_argument("--wait-goal", type=float, default=120.0, help="Timeout por goal (s)")
@@ -713,7 +751,11 @@ def main() -> int:
     pb.add_argument("--robot", default="tb1")
     pb.add_argument("--single-robot", action="store_true", help="Força robot_id vazio")
     pb.add_argument("--route", default="percurso1_tb1")
-    pb.add_argument("--topics", nargs="+", default=["scan", "odom", "imu"])
+    pb.add_argument(
+        "--topics",
+        nargs="+",
+        default=["scan", "odom", "imu", "amcl_pose"],
+    )
     pb.add_argument("--wait-goal", type=float, default=300.0, help="Timeout da rota completa (s)")
     pb.add_argument(
         "--replay-nav-start-timeout",

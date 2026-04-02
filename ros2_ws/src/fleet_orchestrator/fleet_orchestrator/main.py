@@ -433,6 +433,9 @@ class FleetOrchestrator(Node):
         response.success = True
         response.message = f"Nav2 navigation started for {robot_id}."
         response.error_code = ""
+        # Sem isto, /fleet/status só atualiza no timer (1 Hz) e clientes perdem "navigating"
+        # se o Nav2 responder rápido (rejeição / goal curto).
+        self._publish_fleet_status()
         return response
 
     def _handle_go_to_point(
@@ -515,6 +518,7 @@ class FleetOrchestrator(Node):
         response.success = True
         response.message = f"Goal sent for {robot_id}. Navigating to ({request.x:.2f}, {request.y:.2f})."
         response.error_code = ""
+        self._publish_fleet_status()
         return response
 
     def _handle_list_robots(
@@ -564,6 +568,7 @@ class FleetOrchestrator(Node):
             state._goal_handle = None
             state._last_error = ""
             self.get_logger().info(f"[{robot_id}] Navigation cancelled.")
+            self._publish_fleet_status()
             response.success = True
             response.message = f"Cancelled navigation for {robot_id}."
             response.error_code = ""
@@ -593,10 +598,12 @@ class FleetOrchestrator(Node):
             self.get_logger().error(f"[{robot_id}] Nav2 rejected the goal.")
             self._state[robot_id].is_navigating = False
             self._state[robot_id]._last_error = ErrorCode.NAV2_REJECTED
+            self._publish_fleet_status()
             return
 
         self._state[robot_id]._goal_handle = goal_handle
         self.get_logger().info(f"[{robot_id}] Nav2 goal accepted. Navigating...")
+        self._publish_fleet_status()
 
         result_future = goal_handle.get_result_async()
         result_future.add_done_callback(lambda f: self._nav2_result_cb(robot_id, f))
@@ -608,6 +615,7 @@ class FleetOrchestrator(Node):
         except Exception as ex:
             self.get_logger().error(f"[{robot_id}] Nav2 result error: {ex}")
             self._state[robot_id].is_navigating = False
+            self._publish_fleet_status()
             return
 
         # Nav2 action can fail fast; log the detailed result fields for diagnostics.
@@ -622,6 +630,7 @@ class FleetOrchestrator(Node):
         self._state[robot_id].is_navigating = False
         self._state[robot_id]._goal_handle = None
         self._state[robot_id]._last_error = ""
+        self._publish_fleet_status()
 
     def _nav2_feedback_cb(self, robot_id: str, feedback_msg) -> None:
         now_ns = self.get_clock().now().nanoseconds

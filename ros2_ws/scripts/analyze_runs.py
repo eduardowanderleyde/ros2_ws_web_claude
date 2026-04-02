@@ -1,20 +1,19 @@
 #!/usr/bin/env python3
 """
-Pós-processamento de rosbag2 gravados pelo fleet_data_collector: extrai trajetória de odometria,
-calcula métricas (duração, comprimento, RMSE entre pares, erro no ponto final vs referência,
-desvio médio ponto a ponto vs referência, razão de duração), exporta CSV por run e gera gráfico.
+Pós-processamento de rosbag2 gravados pelo fleet_data_collector: extrai trajetória (AMCL no mapa
+ou /odom), calcula métricas (duração, comprimento, RMSE entre pares, erro no ponto final vs
+referência, desvio médio ponto a ponto vs referência, razão de duração), exporta CSV e gráfico.
 
 Uso (com workspace ROS 2 sourceado):
   source install/setup.bash
   python3 scripts/analyze_runs.py collections/default/run_a collections/default/run_b
-  python3 scripts/analyze_runs.py "collections/default/*" --output-dir analysis_out
+  python3 scripts/analyze_runs.py bag1 bag2 --trajectory-topic auto   # prefere /amcl_pose se existir
 
-A **referência** é sempre o **primeiro** bag da lista (índice 0): métricas `vs_reference` comparam
-as demais execuções a ela.
+A **referência** é sempre o **primeiro** bag da lista (índice 0).
 
 Dependências Python: numpy; matplotlib opcional para PNG (--no-plot se não tiver).
 
-Requer: rosbag2 com mensagens nav_msgs (mesmo ambiente do colcon).
+Requer: rosbag2 + mensagens nav_msgs / geometry_msgs (ambiente colcon).
 """
 from __future__ import annotations
 
@@ -42,6 +41,7 @@ except ImportError:
 def _need_ros():
     import rclpy  # noqa: F401
     from nav_msgs.msg import Odometry  # noqa: F401
+    from geometry_msgs.msg import PoseWithCovarianceStamped  # noqa: F401
     from rclpy.serialization import deserialize_message  # noqa: F401
 
 
@@ -49,12 +49,13 @@ def _need_ros():
 class RunStats:
     label: str
     bag_path: str
-    odom_topic: str
+    traj_topic: str
     num_poses: int
     duration_sec: float
     path_length_m: float
     start_xy: Tuple[float, float]
     end_xy: Tuple[float, float]
+    static_traj_warn: bool
 
 
 def _expand_inputs(paths: Sequence[str]) -> List[Path]:
@@ -101,51 +102,153 @@ def _open_reader(uri: str):
     raise RuntimeError(f"Não foi possível abrir o bag: {uri} (tente mcap/sqlite3)")
 
 
-def _find_odom_topic(reader) -> str:
-    for meta in reader.get_all_topics_and_types():
-        name = meta.name
-        typ = meta.type
-        if "Odometry" in typ and "odom" in name.lower():
+def _topic_map(uri: str) -> Dict[str, str]:
+    reader, _storage = _open_reader(uri)
+    try:
+        return {m.name: m.type for m in reader.get_all_topics_and_types()}
+    finally:
+        reader.close()
+
+
+def _topic_message_counts(uri: str) -> Dict[str, int]:
+    """Contagens reais (metadata do bag); /amcl_pose pode existir no schema com 0 mensagens."""
+    from rosbag2_py import Info
+
+    for storage in ("mcap", "sqlite3"):
+        try:
+            meta = Info().read_metadata(uri, storage)
+            return {
+                ti.topic_metadata.name: ti.message_count
+                for ti in meta.topics_with_message_count
+            }
+        except Exception:
+            continue
+    return {}
+
+
+def _bag_duration_sec(uri: str) -> Optional[float]:
+    """Duração total gravada no metadata do rosbag (útil se há 1 msg na trajetória)."""
+    from rosbag2_py import Info
+
+    for storage in ("mcap", "sqlite3"):
+        try:
+            meta = Info().read_metadata(uri, storage)
+            return float(meta.duration.nanoseconds) * 1e-9
+        except Exception:
+            continue
+    return None
+
+
+def _find_odom_topic_name(tmap: Dict[str, str]) -> str:
+    cands = [n for n, typ in tmap.items() if "Odometry" in typ and "odom" in n.lower()]
+    if not cands:
+        raise RuntimeError("Nenhum tópico de odometria (nav_msgs/Odometry) no bag.")
+    if "/odom" in cands:
+        return "/odom"
+    cands.sort(key=lambda n: (n.count("/"), len(n)))
+    return cands[0]
+
+
+def _find_amcl_topic_name(tmap: Dict[str, str]) -> Optional[str]:
+    if "/amcl_pose" in tmap and "PoseWithCovarianceStamped" in tmap["/amcl_pose"]:
+        return "/amcl_pose"
+    for name, typ in tmap.items():
+        if name.endswith("/amcl_pose") and "PoseWithCovarianceStamped" in typ:
             return name
-    raise RuntimeError("Nenhum tópico de odometria (nav_msgs/Odometry) encontrado no bag.")
+    return None
 
 
-def _read_odom_xy(
+def _resolve_trajectory_topic(
+    uri: str,
+    mode: str,
+    *,
+    tmap: Optional[Dict[str, str]] = None,
+    counts: Optional[Dict[str, int]] = None,
+) -> str:
+    tmap = tmap if tmap is not None else _topic_map(uri)
+    counts = counts if counts is not None else _topic_message_counts(uri)
+    if mode == "auto":
+        amcl = _find_amcl_topic_name(tmap)
+        if amcl is not None and counts.get(amcl, 0) > 0:
+            return amcl
+        return _find_odom_topic_name(tmap)
+    if mode == "amcl_pose":
+        amcl = _find_amcl_topic_name(tmap)
+        if amcl is None:
+            raise RuntimeError(
+                "Modo amcl_pose: bag sem tópico amcl_pose (geometry_msgs/PoseWithCovarianceStamped). "
+                "Grave com: --topics ... amcl_pose no experiment_repeatability / enable_collection."
+            )
+        if counts.get(amcl, 0) == 0:
+            raise RuntimeError(
+                f"Modo amcl_pose: {amcl} existe no bag mas tem 0 mensagens "
+                "(AMCL sem pose inicial ativa ou QoS). "
+                "Defina pose no RViz ou use --initial-pose antes da coleta; recompile/reinicie o collector."
+            )
+        return amcl
+    if mode == "odom":
+        return _find_odom_topic_name(tmap)
+    raise ValueError(f"trajectory-topic inválido: {mode}")
+
+
+def _read_traj_xy(
     bag_dir: Path,
-) -> Tuple[str, np.ndarray, np.ndarray, np.ndarray]:
-    """Retorna (topic, t_sec, x, y)."""
+    topic: str,
+) -> Tuple[str, np.ndarray, np.ndarray, np.ndarray, float]:
+    """Retorna (topic, t_sec_rel_bag, x, y, duration_wall_sec).
+
+    Ordenação e duração pelo timestamp de gravação no rosbag (3.º campo de read_next).
+    """
     from nav_msgs.msg import Odometry
+    from geometry_msgs.msg import PoseWithCovarianceStamped
     from rclpy.serialization import deserialize_message
     import rosbag2_py
 
     uri = str(bag_dir.resolve())
+    tmap = _topic_map(uri)
+    if topic not in tmap:
+        raise RuntimeError(f"Tópico {topic} não encontrado no bag.")
+    typ = tmap[topic]
+
     reader, _storage = _open_reader(uri)
-    topic = _find_odom_topic(reader)
     filt = rosbag2_py.StorageFilter(topics=[topic])
     reader.set_filter(filt)
 
-    ts: List[float] = []
-    xs: List[float] = []
-    ys: List[float] = []
+    rows: List[Tuple[int, float, float, float]] = []
 
     while reader.has_next():
         nxt = reader.read_next()
         if len(nxt) == 2:
-            tname, data = nxt
+            _tname, data = nxt
+            bag_ns = 0
         else:
-            tname, data = nxt[0], nxt[1]
-        msg = deserialize_message(data, Odometry)
-        sec = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
-        ts.append(sec)
-        xs.append(msg.pose.pose.position.x)
-        ys.append(msg.pose.pose.position.y)
+            _tname, data, bag_ns = nxt[0], nxt[1], int(nxt[2])
+        if "Odometry" in typ:
+            msg = deserialize_message(data, Odometry)
+            x = float(msg.pose.pose.position.x)
+            y = float(msg.pose.pose.position.y)
+        elif "PoseWithCovarianceStamped" in typ:
+            msg = deserialize_message(data, PoseWithCovarianceStamped)
+            x = float(msg.pose.pose.position.x)
+            y = float(msg.pose.pose.position.y)
+        else:
+            reader.close()
+            raise RuntimeError(f"Tipo não suportado para trajetória: {typ}")
+        hdr_sec = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+        rows.append((bag_ns, hdr_sec, x, y))
 
-    if not ts:
-        raise RuntimeError(f"Nenhuma mensagem de odometria em {topic}")
+    reader.close()
 
-    t0 = ts[0]
-    t_rel = np.array([t - t0 for t in ts], dtype=np.float64)
-    return topic, t_rel, np.array(xs, dtype=np.float64), np.array(ys, dtype=np.float64)
+    if not rows:
+        raise RuntimeError(f"Nenhuma mensagem em {topic}")
+
+    rows.sort(key=lambda r: r[0])
+    bag_ns_arr = np.array([r[0] for r in rows], dtype=np.int64)
+    t_rel = (bag_ns_arr - bag_ns_arr[0]) * 1e-9
+    duration_wall_sec = float((bag_ns_arr[-1] - bag_ns_arr[0]) * 1e-9)
+    xs = np.array([r[2] for r in rows], dtype=np.float64)
+    ys = np.array([r[3] for r in rows], dtype=np.float64)
+    return topic, t_rel, xs, ys, duration_wall_sec
 
 
 def _path_length(x: np.ndarray, y: np.ndarray) -> float:
@@ -190,21 +293,49 @@ def _write_trajectory_csv(path: Path, t: np.ndarray, xy: np.ndarray) -> None:
             f.write(f"{t[i]:.6f},{xy[i, 0]:.6f},{xy[i, 1]:.6f}\n")
 
 
-def analyze_bag(label: str, bag_dir: Path) -> Tuple[RunStats, np.ndarray, np.ndarray]:
-    topic, t, x, y = _read_odom_xy(bag_dir)
-    duration = float(t[-1] - t[0]) if len(t) > 1 else 0.0
+def analyze_bag(
+    label: str,
+    bag_dir: Path,
+    trajectory_mode: str,
+) -> Tuple[RunStats, np.ndarray, np.ndarray]:
+    uri = str(bag_dir.resolve())
+    counts = _topic_message_counts(uri)
+    tmap = _topic_map(uri)
+    amcl = _find_amcl_topic_name(tmap)
+    topic = _resolve_trajectory_topic(
+        uri, trajectory_mode, tmap=tmap, counts=counts
+    )
+    if trajectory_mode == "auto" and amcl is not None and counts.get(amcl, 0) == 0:
+        print(
+            f"[aviso] {label}: {amcl} tem 0 mensagens no bag (AMCL sem publicar ou pose inicial). "
+            "Métricas usam /odom. Regrave com pose inicial + collector atualizado (QoS AMCL).",
+            file=sys.stderr,
+        )
+    topic, t, x, y, duration_wall = _read_traj_xy(bag_dir, topic)
+    duration = duration_wall if len(t) > 1 else 0.0
+    meta_dur = _bag_duration_sec(uri)
+    if meta_dur is not None and meta_dur > 0.0 and (len(t) <= 1 or duration < 1e-9):
+        duration = meta_dur
     plen = _path_length(x, y)
     xy = np.column_stack([x, y])
+    static = len(x) > 50 and plen < 1e-4
     stats = RunStats(
         label=label,
         bag_path=str(bag_dir.resolve()),
-        odom_topic=topic,
+        traj_topic=topic,
         num_poses=len(x),
         duration_sec=duration,
         path_length_m=plen,
         start_xy=(float(x[0]), float(y[0])),
         end_xy=(float(x[-1]), float(y[-1])),
+        static_traj_warn=static,
     )
+    if "amcl" in topic.lower() and len(x) < 10:
+        print(
+            f"[aviso] {label}: poucas amostras ({len(x)}) em {topic} — métricas de trajetória são "
+            "enganosas (ex.: RMSE entre pontos únicos). Recompile/reinicie o collector (QoS amcl_pose) e regrave.",
+            file=sys.stderr,
+        )
     return stats, xy, t
 
 
@@ -237,6 +368,12 @@ def main() -> int:
         action="store_true",
         help="Não grava trajectory_<label>.csv por run",
     )
+    parser.add_argument(
+        "--trajectory-topic",
+        choices=("auto", "amcl_pose", "odom"),
+        default="auto",
+        help="Fonte da trajetória: auto=/amcl_pose se existir senão /odom; amcl_pose=obrigatório no bag",
+    )
     args = parser.parse_args()
 
     try:
@@ -266,7 +403,7 @@ def main() -> int:
     for label, bdir in zip(labels, bag_paths):
         print(f"Lendo {label} ... ({bdir})")
         try:
-            st, xy, t_rel = analyze_bag(label, bdir)
+            st, xy, t_rel = analyze_bag(label, bdir, args.trajectory_topic)
             all_stats.append(st)
             trajectories.append(xy)
             times.append(t_rel)
@@ -349,7 +486,7 @@ def main() -> int:
             ax.set_aspect("equal", adjustable="datalim")
             ax.set_xlabel("x (m)")
             ax.set_ylabel("y (m)")
-            ax.set_title("Trajetórias (odom) — comparação entre runs")
+            ax.set_title("Trajetórias (mapa ou odom) — comparação entre runs")
             ax.legend(loc="best", fontsize=9)
             ax.grid(True, alpha=0.3)
             # Caixa de texto: RMSE vs referência (primeiro bag)
@@ -378,7 +515,7 @@ def main() -> int:
     for s in all_stats:
         print(
             f"  {s.label}: duração={s.duration_sec:.2f}s  comprimento={s.path_length_m:.3f}m  "
-            f"poses={s.num_poses}  topic={s.odom_topic}"
+            f"poses={s.num_poses}  topic={s.traj_topic}"
         )
     if n > 1:
         print("\n--- RMSE (m) entre pares (subamostragem uniforme) ---")
@@ -394,6 +531,16 @@ def main() -> int:
                 f"Δfim={v['final_endpoint_error_m']:.4f} m  "
                 f"duração×={v['duration_ratio_vs_ref']:.3f}"
             )
+
+    static_labels = [s.label for s in all_stats if s.static_traj_warn]
+    if static_labels:
+        print("\n--- Avisos ---")
+        print(
+            "  Trajetória (x,y) quase constante — comprimento e RMSE ~0. "
+            "Se a fonte foi /odom: verifique Gazebo/ros_gz_bridge. "
+            "Se /amcl_pose no bag tem 0 mensagens: pose inicial (RViz ou --initial-pose) antes da coleta e collector com QoS AMCL."
+        )
+        print(f"  Runs afetados: {', '.join(static_labels)}")
 
     return 0
 
