@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Type
@@ -123,14 +124,13 @@ class SensorCollector(Node):
             return resp
 
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M-%S_%f")
-        bag_name = ts
-        bag_dir = os.path.join(self._collections_dir, self._subdir(rid), bag_name)
-        if os.path.exists(bag_dir):
-            resp.success = False
-            resp.message = f"Path exists: {bag_dir}"
-            resp.error_code = "BAG_PATH_EXISTS"
-            return resp
-        os.makedirs(bag_dir, exist_ok=True)
+        # Sufixo único (colisão de nome no disco).
+        bag_name = f"{ts}_{uuid.uuid4().hex[:8]}"
+        parent = os.path.join(self._collections_dir, self._subdir(rid))
+        os.makedirs(parent, exist_ok=True)
+        bag_dir = os.path.join(parent, bag_name)
+        # Não criar bag_dir aqui: rosbag2 SequentialWriter.open() exige que o URI do bag
+        # ainda não exista ("can't overwrite existing bag" se a pasta já foi criada vazia).
 
         try:
             writer = self._make_writer(bag_dir)
