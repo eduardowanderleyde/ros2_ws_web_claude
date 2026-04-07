@@ -631,25 +631,13 @@ export default function App() {
                 </div>
               )}
 
-              {/* JSON colapsável */}
-              <div>
-                <button
-                  onClick={() => setShowResult(v => !v)}
-                  style={{ ...btnStyle('#161a22', '#2a3142'), fontSize: '0.78rem', width: '100%', textAlign: 'left' }}
-                >
-                  {showResult ? '▾ Ocultar resultado JSON' : '▸ Ver resultado JSON'}
-                </button>
-                {showResult && (
-                  <pre style={{
-                    background: '#161a22', border: '1px solid #2a3142', borderRadius: '0 0 8px 8px',
-                    padding: '0.75rem 1rem', fontSize: '0.78rem',
-                    fontFamily: 'JetBrains Mono, Consolas, monospace', color: '#e6e9ef',
-                    margin: 0, overflowX: 'auto', maxHeight: '220px', overflowY: 'auto',
-                  }}>
-                    {JSON.stringify(job.result, null, 2)}
-                  </pre>
-                )}
-              </div>
+              {/* JSON — abre modal */}
+              <button
+                onClick={() => setShowResult(true)}
+                style={{ ...btnStyle('#161a22', '#2a3142'), fontSize: '0.78rem', width: '100%', textAlign: 'left' }}
+              >
+                ▸ Ver resultado JSON
+              </button>
             </div>
           )}
 
@@ -660,6 +648,44 @@ export default function App() {
           )}
         </div>
       </div>
+
+      {/* Modal JSON resultado */}
+      {showResult && job?.result && (
+        <div
+          onClick={() => setShowResult(false)}
+          style={{
+            position: 'fixed', inset: 0, zIndex: 200,
+            background: 'rgba(0,0,0,0.75)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            padding: '2rem',
+          }}
+        >
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{
+              background: '#161a22', border: '1px solid #2a3142', borderRadius: '12px',
+              width: '100%', maxWidth: '860px', maxHeight: '85vh',
+              display: 'flex', flexDirection: 'column', overflow: 'hidden',
+              boxShadow: '0 16px 48px rgba(0,0,0,0.7)',
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.85rem 1.25rem', borderBottom: '1px solid #2a3142' }}>
+              <span style={{ fontSize: '0.82rem', fontWeight: 600, color: '#8b92a8', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                Resultado JSON
+              </span>
+              <button onClick={() => setShowResult(false)} style={{ background: 'none', border: 'none', color: '#8b92a8', cursor: 'pointer', fontSize: '1.1rem', lineHeight: 1 }}>✕</button>
+            </div>
+            <pre style={{
+              flex: 1, overflowY: 'auto', overflowX: 'auto',
+              margin: 0, padding: '1.25rem',
+              fontFamily: 'JetBrains Mono, Consolas, monospace',
+              fontSize: '0.82rem', lineHeight: 1.65, color: '#e6e9ef',
+            }}>
+              {JSON.stringify(job.result, null, 2)}
+            </pre>
+          </div>
+        </div>
+      )}
 
       <style>{`@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }`}</style>
     </div>
