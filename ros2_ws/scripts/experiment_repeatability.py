@@ -388,44 +388,65 @@ def _bag_compute_metrics(bag_path: Optional[str]) -> dict:
             except Exception:
                 continue
 
-            topic_types = {m.name: m.type for m in reader.get_all_topics_and_types()}
+            # Normaliza nomes: garante barra inicial independente da versão do rosbag2_py
+            def _norm(name: str) -> str:
+                return name if name.startswith("/") else f"/{name}"
 
+            topic_types = {_norm(m.name): m.type for m in reader.get_all_topics_and_types()}
+            print(f"[TRACE] Tópicos no bag: {list(topic_types.keys())}")
+
+            # Importa classes uma vez só
+            from nav_msgs.msg import Odometry as _Odom
+            from sensor_msgs.msg import LaserScan as _Scan, Imu as _Imu
+
+            odom_count = 0
             while reader.has_next():
                 try:
-                    topic, data, t_ns = reader.read_next()
+                    topic_raw, data, t_ns = reader.read_next()
                 except Exception:
                     break
 
-                if topic == "/odom" and "nav_msgs/msg/Odometry" in topic_types.get(topic, ""):
-                    from nav_msgs.msg import Odometry as _Odom
-                    msg = deserialize_message(data, _Odom)
-                    x = msg.pose.pose.position.x
-                    y = msg.pose.pose.position.y
-                    if prev_xy is not None:
-                        d = _math.hypot(x - prev_xy[0], y - prev_xy[1])
-                        odom_path_m += d
-                        if prev_t_ns is not None:
-                            dt = (t_ns - prev_t_ns) / 1e9
-                            if dt > 0:
-                                odom_speeds.append(d / dt)
-                    prev_xy = (x, y)
-                    prev_t_ns = t_ns
+                topic = _norm(topic_raw)
+                ttype = topic_types.get(topic, "")
 
-                elif topic == "/scan" and "sensor_msgs/msg/LaserScan" in topic_types.get(topic, ""):
-                    from sensor_msgs.msg import LaserScan as _Scan
-                    msg = deserialize_message(data, _Scan)
-                    valid = sum(
-                        1 for r in msg.ranges
-                        if _math.isfinite(r) and msg.range_min < r < msg.range_max
-                    )
-                    scan_valid_counts.append(valid)
+                if topic == "/odom" and "Odometry" in ttype:
+                    try:
+                        msg = deserialize_message(data, _Odom)
+                        x = msg.pose.pose.position.x
+                        y = msg.pose.pose.position.y
+                        if prev_xy is not None:
+                            d = _math.hypot(x - prev_xy[0], y - prev_xy[1])
+                            odom_path_m += d
+                            if prev_t_ns is not None:
+                                dt = (t_ns - prev_t_ns) / 1e9
+                                if dt > 0:
+                                    odom_speeds.append(d / dt)
+                        prev_xy = (x, y)
+                        prev_t_ns = t_ns
+                        odom_count += 1
+                    except Exception as ex:
+                        print(f"[TRACE] odom deserialize erro: {ex}")
 
-                elif topic == "/imu" and "sensor_msgs/msg/Imu" in topic_types.get(topic, ""):
-                    from sensor_msgs.msg import Imu as _Imu
-                    msg = deserialize_message(data, _Imu)
-                    a = msg.linear_acceleration
-                    imu_accel_norms.append(_math.sqrt(a.x**2 + a.y**2 + a.z**2))
+                elif topic == "/scan" and "LaserScan" in ttype:
+                    try:
+                        msg = deserialize_message(data, _Scan)
+                        valid = sum(
+                            1 for r in msg.ranges
+                            if _math.isfinite(r) and msg.range_min < r < msg.range_max
+                        )
+                        scan_valid_counts.append(valid)
+                    except Exception:
+                        pass
 
+                elif topic == "/imu" and "Imu" in ttype:
+                    try:
+                        msg = deserialize_message(data, _Imu)
+                        a = msg.linear_acceleration
+                        imu_accel_norms.append(_math.sqrt(a.x**2 + a.y**2 + a.z**2))
+                    except Exception:
+                        pass
+
+            print(f"[TRACE] odom msgs lidas: {odom_count}  path acumulado: {odom_path_m:.4f} m")
             reader.close()
             break  # leu com sucesso
 
