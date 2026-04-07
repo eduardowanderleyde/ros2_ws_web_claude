@@ -16,7 +16,7 @@ const EXAMPLE_RECORD = JSON.stringify({
   robot: "default",
   route: "percurso1",
   collect: true,
-  topics: ["scan", "odom", "imu", "tf"],
+  topics: ["scan", "odom", "imu", "tf", "pose"],
   initial_pose: [0, 0, 0],
   points: [
     [0.5, 0.0, 0.0],
@@ -31,7 +31,7 @@ const EXAMPLE_REPLAY = JSON.stringify({
   robot: "default",
   route: "percurso1",
   collect: true,
-  topics: ["scan", "odom", "imu", "tf"],
+  topics: ["scan", "odom", "imu", "tf", "pose"],
   initial_pose: [0, 0, 0],
   return_to_start: [0, 0, 0]
 }, null, 2)
@@ -580,19 +580,21 @@ export default function App() {
               {job.result.bag_metrics && Object.keys(job.result.bag_metrics).length > 0 && (() => {
                 const m = job.result.bag_metrics
                 const dur = m.wall_duration_s ?? m.duration_s
-                // Prioridade: TF (SLAM) > odom > teórico (waypoints)
+                // Prioridade: /pose (SLAM direto) > TF > odom > teórico (waypoints)
+                const posePath  = m.pose_path_length_m
                 const tfPath    = m.tf_path_length_m
                 const odomPath  = m.odom_path_length_m
                 const theoPath  = m.theoretical_path_m
-                const path      = tfPath ?? odomPath ?? theoPath
-                const pathLabel = tfPath != null ? 'Percurso real (TF/SLAM)' : odomPath != null ? 'Percurso (odom)' : 'Percurso (teórico)'
-                const pathColor = tfPath != null ? '#6ee7b7' : odomPath != null ? '#6ee7b7' : '#fbbf24'
-                const speed     = tfPath != null ? m.tf_avg_speed_ms : m.odom_avg_speed_ms
+                const realPath  = posePath ?? tfPath ?? odomPath
+                const path      = realPath ?? theoPath
+                const pathLabel = posePath != null ? 'Percurso real (/pose)' : tfPath != null ? 'Percurso real (TF)' : odomPath != null ? 'Percurso (odom)' : 'Percurso (teórico)'
+                const pathColor = realPath != null ? '#6ee7b7' : '#fbbf24'
+                const speed     = posePath != null ? m.pose_avg_speed_ms : tfPath != null ? m.tf_avg_speed_ms : m.odom_avg_speed_ms
                 const cards = [
-                  dur     != null && { label: 'Duração',    value: `${dur} s`,         color: '#93c5fd' },
-                  path    != null && { label: pathLabel,     value: `${path} m`,        color: pathColor },
-                  speed   != null && { label: 'Vel. média',  value: `${speed} m/s`,     color: pathColor },
-                  theoPath != null && tfPath == null && { label: 'Percurso teórico', value: `${theoPath} m`, color: '#fbbf24' },
+                  dur      != null && { label: 'Duração',          value: `${dur} s`,        color: '#93c5fd' },
+                  path     != null && { label: pathLabel,           value: `${path} m`,       color: pathColor },
+                  speed    != null && { label: 'Vel. média',        value: `${speed} m/s`,    color: pathColor },
+                  theoPath != null && realPath != null && { label: 'Percurso teórico', value: `${theoPath} m`, color: '#fbbf24' },
                   m.scan_avg_valid_points  != null && { label: 'Scan pts válidos', value: `${m.scan_avg_valid_points}`,   color: '#fbbf24' },
                   m.imu_accel_mean_ms2     != null && { label: 'IMU accel média',  value: `${m.imu_accel_mean_ms2} m/s²`, color: '#c4b5fd' },
                   m.imu_accel_variance_ms2 != null && { label: 'IMU variância',    value: `${m.imu_accel_variance_ms2}`,  color: '#c4b5fd' },

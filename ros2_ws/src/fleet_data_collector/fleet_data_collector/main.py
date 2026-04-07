@@ -20,6 +20,7 @@ from rosbag2_py import ConverterOptions, SequentialWriter, StorageOptions, Topic
 
 from fleet_msgs.srv import CollectionStatus, DisableCollection, EnableCollection
 
+from geometry_msgs.msg import PoseWithCovarianceStamped
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import Imu, LaserScan
 from tf2_msgs.msg import TFMessage
@@ -40,6 +41,7 @@ class SensorCollector(Node):
         "scan": ("sensor_msgs/msg/LaserScan", LaserScan),
         "odom": ("nav_msgs/msg/Odometry", Odometry),
         "imu":  ("sensor_msgs/msg/Imu", Imu),
+        "pose": ("geometry_msgs/msg/PoseWithCovarianceStamped", PoseWithCovarianceStamped),
     }
     # Tópicos globais (sem prefixo de robot_id, nome fixo)
     _GLOBAL_TOPICS = {

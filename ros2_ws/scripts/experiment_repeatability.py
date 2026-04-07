@@ -400,9 +400,11 @@ def _bag_compute_metrics(bag_path: Optional[str]) -> dict:
             from nav_msgs.msg import Odometry as _Odom
             from sensor_msgs.msg import LaserScan as _Scan, Imu as _Imu
             from tf2_msgs.msg import TFMessage as _TFMsg
+            from geometry_msgs.msg import PoseWithCovarianceStamped as _PoseStamped
 
             odom_count = 0
-            tf_positions: list = []   # (x, y, t_ns) via map→odom ou map→base_footprint
+            tf_positions: list = []    # (x, y, t_ns) via map→odom ou map→base_footprint
+            pose_positions: list = []  # (x, y, t_ns) via /pose (SLAM Toolbox — mais fiável)
             while reader.has_next():
                 try:
                     topic_raw, data, t_ns = reader.read_next()
@@ -474,13 +476,34 @@ def _bag_compute_metrics(bag_path: Optional[str]) -> dict:
                     except Exception:
                         pass
 
+                elif topic == "/pose" and "PoseWithCovarianceStamped" in ttype:
+                    try:
+                        msg = deserialize_message(data, _PoseStamped)
+                        x = msg.pose.pose.position.x
+                        y = msg.pose.pose.position.y
+                        pose_positions.append((x, y, t_ns))
+                    except Exception:
+                        pass
+
             odom_path_m = max(odom_path_pos, odom_path_vel)
             odom_is_zero = odom_count > 0 and odom_path_m < 0.001
             print(f"[TRACE] odom msgs lidas: {odom_count}  path_pos: {odom_path_pos:.4f} m  path_vel: {odom_path_vel:.4f} m  → usando: {odom_path_m:.4f} m")
             if odom_is_zero:
                 print("[TRACE] AVISO: odom sempre zero — usando TF (map→odom) para percurso")
 
-            # Percurso via TF (map→odom do SLAM Toolbox — mais fiável que /odom no Gazebo)
+            # Percurso via /pose (SLAM Toolbox PoseWithCovarianceStamped — fonte mais fiável)
+            pose_path_m = 0.0
+            if pose_positions:
+                prev_pose: Optional[tuple] = None
+                for (x, y, _) in pose_positions:
+                    if prev_pose is not None:
+                        d = _math.hypot(x - prev_pose[0], y - prev_pose[1])
+                        if d < 1.0:   # ignora teletransportes
+                            pose_path_m += d
+                    prev_pose = (x, y)
+                print(f"[TRACE] /pose path: {len(pose_positions)} pontos  percurso: {pose_path_m:.4f} m")
+
+            # Percurso via TF (map→odom do SLAM Toolbox — fallback se /pose não disponível)
             tf_path_m = 0.0
             if tf_positions:
                 # Filtra saltos > 1 m (artefactos de TF) e acumula distância
@@ -499,8 +522,12 @@ def _bag_compute_metrics(bag_path: Optional[str]) -> dict:
         metrics: dict = {}
         if duration_s is not None:
             metrics["duration_s"] = round(duration_s, 2)
-        # Percurso real via TF (preferido), fallback para odom se disponível
-        if tf_path_m > 0.01:
+        # Prioridade: /pose (SLAM direto) > TF (map→odom) > odom > indisponível
+        if pose_path_m > 0.01:
+            metrics["pose_path_length_m"] = round(pose_path_m, 3)
+            ref_dur = duration_s or 1
+            metrics["pose_avg_speed_ms"] = round(pose_path_m / ref_dur, 3)
+        elif tf_path_m > 0.01:
             metrics["tf_path_length_m"] = round(tf_path_m, 3)
             ref_dur = duration_s or 1
             metrics["tf_avg_speed_ms"] = round(tf_path_m / ref_dur, 3)
@@ -523,6 +550,8 @@ def _bag_compute_metrics(bag_path: Optional[str]) -> dict:
             print("\n[TRACE] Métricas do bag:")
             labels = {
                 "duration_s": "Duração",
+                "pose_path_length_m": "Percurso real (/pose SLAM)",
+                "pose_avg_speed_ms": "Velocidade média (/pose)",
                 "tf_path_length_m": "Percurso real (TF/SLAM)",
                 "tf_avg_speed_ms": "Velocidade média (TF)",
                 "odom_path_length_m": "Percurso /odom",
@@ -533,7 +562,9 @@ def _bag_compute_metrics(bag_path: Optional[str]) -> dict:
                 "imu_accel_variance_ms2": "IMU variância aceleração",
             }
             units = {
-                "duration_s": "s", "tf_path_length_m": "m", "tf_avg_speed_ms": "m/s",
+                "duration_s": "s",
+                "pose_path_length_m": "m", "pose_avg_speed_ms": "m/s",
+                "tf_path_length_m": "m", "tf_avg_speed_ms": "m/s",
                 "odom_path_length_m": "m", "odom_avg_speed_ms": "m/s",
                 "imu_accel_mean_ms2": "m/s²",
             }
