@@ -140,12 +140,17 @@ export default function App() {
     setDiscovered([])
     setDiscoverError(null)
     try {
-      const url = subnet ? `${API}/discover_robots?subnet=${encodeURIComponent(subnet)}` : `${API}/discover_robots`
-      const r = await fetch(url, { signal: AbortSignal.timeout(30000) })
+      const url = subnet.trim() ? `${API}/discover_robots?subnet=${encodeURIComponent(subnet.trim())}` : `${API}/discover_robots`
+      const r = await fetch(url, { signal: AbortSignal.timeout(40000) })
+      if (!r.ok) { setDiscoverError(`Erro HTTP ${r.status}`); return }
       const data = await r.json()
       if (data.error) { setDiscoverError(data.error); return }
-      setDiscovered(data.found || [])
-      if ((data.found || []).length === 0) setDiscoverError(`Nenhum host com SSH encontrado em ${data.subnet_scanned}.0/24`)
+      const found = data.found || []
+      setDiscovered(found)
+      if (found.length === 0) {
+        const sub = data.subnet_scanned || subnet.trim() || '(auto)'
+        setDiscoverError(`Nenhum host com porta 22 aberta encontrado em ${sub}.0/24`)
+      }
     } catch (e) {
       setDiscoverError(`Erro: ${e.message}`)
     } finally {

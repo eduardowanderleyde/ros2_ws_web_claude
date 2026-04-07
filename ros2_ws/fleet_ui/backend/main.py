@@ -468,16 +468,20 @@ async def discover_robots(subnet: str = ""):
             local_ip = s.getsockname()[0]
             s.close()
             subnet = ".".join(local_ip.split(".")[:3])
-        except Exception:
-            return {"found": [], "error": "Não foi possível detectar subnet local"}
+            print(f"[discover] IP local: {local_ip}  subnet: {subnet}")
+        except Exception as e:
+            print(f"[discover] falhou auto-detecção: {e}")
+            return {"found": [], "subnet_scanned": "", "error": "Não foi possível detectar subnet local. Informe manualmente (ex: 192.168.1)"}
+
+    subnet = subnet.strip()
 
     # Valida formato
     try:
-        parts = subnet.strip().split(".")
+        parts = subnet.split(".")
         if len(parts) != 3 or not all(p.isdigit() and 0 <= int(p) <= 255 for p in parts):
-            return {"found": [], "error": f"Subnet inválida: {subnet}"}
+            return {"found": [], "subnet_scanned": subnet, "error": f"Subnet inválida: {subnet}. Use formato X.X.X (ex: 192.168.1)"}
     except Exception:
-        return {"found": [], "error": f"Subnet inválida: {subnet}"}
+        return {"found": [], "subnet_scanned": subnet, "error": f"Subnet inválida: {subnet}"}
 
     targets = [f"{subnet}.{i}" for i in range(1, 255)]
 
