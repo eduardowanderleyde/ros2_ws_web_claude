@@ -246,7 +246,6 @@ export default function App() {
   }[connStatus]
 
   const isConnected = connStatus === 'connected'
-  const profile     = ROBOT_PROFILES.find(p => p.id === selectedProfile)
 
   return (
     <div style={{ fontFamily: 'system-ui, sans-serif', background: '#0d0f14', color: '#e6e9ef', minHeight: '100vh', padding: '1.5rem' }}>
@@ -413,6 +412,8 @@ export default function App() {
                     const st = testingSSH[h.ip]
                     const stColor = st === 'ok' ? '#6ee7b7' : st === 'no_ros' ? '#fbbf24' : st === 'error' ? '#f87171' : '#8b92a8'
                     const stLabel = st === 'testing' ? '⏳' : st === 'ok' ? '✓ ROS 2' : st === 'no_ros' ? '⚠ sem ROS' : st === 'error' ? '✗ falhou' : 'Testar SSH'
+                    const profileId = `ssh_${h.ip}`
+                    const canConnect = st === 'ok' && extraProfiles.find(p => p.id === profileId)
                     return (
                       <div key={h.ip} style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', background: '#0d0f14', borderRadius: '6px', padding: '0.5rem 0.75rem', border: `1px solid ${h.likely_robot ? '#2a3a2a' : '#2a3142'}` }}>
                         <span style={{ width: 8, height: 8, borderRadius: '50%', background: h.likely_robot ? '#6ee7b7' : '#4b5563', display: 'inline-block', flexShrink: 0 }} />
@@ -425,6 +426,19 @@ export default function App() {
                           style={{ ...btnStyle('#161a22', stColor), fontSize: '0.72rem', padding: '0.25rem 0.5rem', flexShrink: 0 }}>
                           {stLabel}
                         </button>
+                        {canConnect && (
+                          <button
+                            onClick={() => {
+                              setSelectedProfile(profileId)
+                              setConnStatus('connected')
+                              setConnMsg(`SSH ${h.ip} com ROS 2`)
+                              setDiscoverPanel(false)
+                            }}
+                            style={{ ...btnStyle('#065f46', '#6ee7b7'), fontSize: '0.72rem', padding: '0.25rem 0.5rem', flexShrink: 0 }}
+                          >
+                            Conectar
+                          </button>
+                        )}
                       </div>
                     )
                   })}
