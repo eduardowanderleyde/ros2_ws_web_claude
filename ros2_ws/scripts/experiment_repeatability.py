@@ -460,17 +460,23 @@ def _bag_compute_metrics(bag_path: Optional[str]) -> dict:
                         pass
 
             odom_path_m = max(odom_path_pos, odom_path_vel)
+            odom_is_zero = odom_count > 0 and odom_path_m < 0.001
             print(f"[TRACE] odom msgs lidas: {odom_count}  path_pos: {odom_path_pos:.4f} m  path_vel: {odom_path_vel:.4f} m  → usando: {odom_path_m:.4f} m")
+            if odom_is_zero:
+                print("[TRACE] AVISO: odom sempre zero — plugin Gazebo não publica odometria neste setup. Percurso real indisponível via /odom.")
             reader.close()
             break  # leu com sucesso
 
         metrics: dict = {}
         if duration_s is not None:
             metrics["duration_s"] = round(duration_s, 2)
-        if odom_path_m > 0:
+        # Só inclui métricas de odom se há dados reais (Gazebo neste setup publica sempre zero)
+        if odom_path_m > 0.001:
             metrics["odom_path_length_m"] = round(odom_path_m, 3)
             if duration_s and duration_s > 0:
                 metrics["odom_avg_speed_ms"] = round(odom_path_m / duration_s, 3)
+        elif odom_count > 0:
+            metrics["odom_unavailable"] = True  # sinaliza para a UI não mostrar 0
         if scan_valid_counts:
             metrics["scan_avg_valid_points"] = round(sum(scan_valid_counts) / len(scan_valid_counts), 1)
             metrics["scan_min_valid_points"] = min(scan_valid_counts)
