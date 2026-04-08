@@ -16,7 +16,7 @@ const EXAMPLE_RECORD = JSON.stringify({
   robot: "default",
   route: "percurso1",
   collect: true,
-  topics: ["scan", "odom", "imu", "tf", "pose"],
+  topics: ["scan", "odom", "imu", "pose"],
   initial_pose: [0, 0, 0],
   points: [
     [0.5, 0.0, 0.0],
@@ -31,7 +31,7 @@ const EXAMPLE_REPLAY = JSON.stringify({
   robot: "default",
   route: "percurso1",
   collect: true,
-  topics: ["scan", "odom", "imu", "tf", "pose"],
+  topics: ["scan", "odom", "imu", "pose"],
   initial_pose: [0, 0, 0],
   return_to_start: [0, 0, 0]
 }, null, 2)
@@ -219,12 +219,12 @@ export default function App() {
     try {
       const r = await fetch(`${API}/go_to_point?x=0&y=0&yaw=0`, { method: 'POST' })
       const data = await r.json()
-      setResetMsg(data.success ? 'ok' : 'erro')
-    } catch {
-      setResetMsg('erro')
+      setResetMsg(data.success ? 'ok' : (data.message || 'erro'))
+    } catch (e) {
+      setResetMsg(`erro: ${e.message}`)
     } finally {
       setResetting(false)
-      setTimeout(() => setResetMsg(null), 3000)
+      setTimeout(() => setResetMsg(null), 6000)
     }
   }
 
@@ -276,9 +276,9 @@ export default function App() {
             onClick={resetToOrigin}
             disabled={resetting}
             title="Envia robô para (0, 0, 0)"
-            style={{ ...btnStyle(resetting ? '#1a2a3a' : '#161a22', resetMsg === 'erro' ? '#f87171' : resetMsg === 'ok' ? '#6ee7b7' : '#6366f1'), fontSize: '0.78rem', padding: '0.3rem 0.75rem' }}
+            style={{ ...btnStyle(resetting ? '#1a2a3a' : '#161a22', resetMsg && resetMsg !== 'ok' ? '#f87171' : resetMsg === 'ok' ? '#6ee7b7' : '#6366f1'), fontSize: '0.78rem', padding: '0.3rem 0.75rem' }}
           >
-            {resetting ? '⏳ indo…' : resetMsg === 'ok' ? '✓ indo' : resetMsg === 'erro' ? '✗ falhou' : '⟳ Reiniciar'}
+            {resetting ? '⏳ indo…' : resetMsg === 'ok' ? '✓ indo para origem' : resetMsg ? `✗ ${resetMsg}` : '⟳ Reiniciar'}
           </button>
         </div>
       </div>

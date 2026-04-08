@@ -228,7 +228,7 @@ def _build_cmd(cfg: dict) -> list[str]:
     single = not robot or robot == "default"
     route = cfg.get("route", "percurso1")
     collect = cfg.get("collect", True)
-    topics = cfg.get("topics", ["scan", "odom", "imu"])
+    topics = cfg.get("topics", ["scan", "odom", "imu", "pose"])
     ip = cfg.get("initial_pose")
     args = [
         "python3", str(Path(WORKSPACE) / "scripts" / "experiment_repeatability.py"),
