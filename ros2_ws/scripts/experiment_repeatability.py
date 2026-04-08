@@ -729,16 +729,19 @@ def cmd_record(args: argparse.Namespace) -> int:
         tf_ok = node.wait_tf_available("map", "base_link", timeout_sec=20.0)
         _print(tf_ok, "TF map->base_link disponível")
 
-        # Aguarda mapa do SLAM antes de enviar goals (costmap global precisa do /map).
-        print("[TRACE] Aguardando /map do SLAM Toolbox ...")
-        map_ok = node.wait_map_available(timeout_sec=30.0)
-        _print(map_ok, "/map disponível (SLAM pronto)")
+        # Aguarda mapa — opcional: SLAM publica /map, AMCL usa mapa pré-carregado (sem /map).
+        # Em ambos os casos o costmap do Nav2 precisa de um breve settle antes do 1º goal.
+        print("[TRACE] Aguardando /map (SLAM) ou settle do costmap (AMCL) ...")
+        map_ok = node.wait_map_available(timeout_sec=10.0)
         if map_ok:
-            # Dá ao costmap global tempo para processar o mapa antes do 1º goal.
-            print("[TRACE] Aguardando costmap processar mapa (3s) ...")
-            t0_map = time.time()
-            while time.time() - t0_map < 3.0:
-                rclpy.spin_once(node, timeout_sec=0.1)
+            print("[OK] /map disponível (modo SLAM)")
+        else:
+            print("[INFO] /map não publicado — modo AMCL com mapa pré-carregado (normal)")
+        # Settle do costmap: aguarda sempre, independente do modo
+        print("[TRACE] Aguardando costmap processar mapa (3s) ...")
+        t0_map = time.time()
+        while time.time() - t0_map < 3.0:
+            rclpy.spin_once(node, timeout_sec=0.1)
 
         try:
             for i, (x, y, yaw) in enumerate(points, start=1):

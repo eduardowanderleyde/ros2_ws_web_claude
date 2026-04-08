@@ -87,7 +87,7 @@ class SensorCollector(Node):
         )
 
     def _qos_reliable(self) -> QoSProfile:
-        """RELIABLE para tópicos de localização (pose) — compatível com SLAM Toolbox."""
+        """RELIABLE + VOLATILE — compatível com SLAM Toolbox /pose."""
         return QoSProfile(
             depth=10,
             reliability=ReliabilityPolicy.RELIABLE,
@@ -95,8 +95,19 @@ class SensorCollector(Node):
             durability=DurabilityPolicy.VOLATILE,
         )
 
-    # Tópicos que precisam de QoS RELIABLE (publicados por nós de localização)
-    _RELIABLE_TOPICS = {"pose", "amcl_pose"}  # AMCL e SLAM Toolbox publicam com RELIABLE
+    def _qos_transient(self) -> QoSProfile:
+        """RELIABLE + TRANSIENT_LOCAL — obrigatório para /amcl_pose (AMCL publica latched)."""
+        return QoSProfile(
+            depth=10,
+            reliability=ReliabilityPolicy.RELIABLE,
+            history=HistoryPolicy.KEEP_LAST,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
+
+    # Tópicos com QoS RELIABLE + VOLATILE (SLAM Toolbox)
+    _RELIABLE_TOPICS = {"pose"}
+    # Tópicos com QoS RELIABLE + TRANSIENT_LOCAL (AMCL publica latched)
+    _TRANSIENT_LOCAL_TOPICS = {"amcl_pose"}
 
     def _qos_tf(self) -> QoSProfile:
         return QoSProfile(
@@ -211,6 +222,8 @@ class SensorCollector(Node):
             short_name = tname.lstrip("/").split("/")[-1]
             if is_global:
                 qos = self._qos_tf()
+            elif short_name in self._TRANSIENT_LOCAL_TOPICS:
+                qos = self._qos_transient()
             elif short_name in self._RELIABLE_TOPICS:
                 qos = self._qos_reliable()
             else:
