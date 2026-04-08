@@ -76,12 +76,25 @@ class SensorCollector(Node):
         return robot_id in self._sessions
 
     def _qos_sensor(self) -> QoSProfile:
+        """BEST_EFFORT para sensores (scan, odom, imu) — compatível com Gazebo."""
         return QoSProfile(
             depth=10,
             reliability=ReliabilityPolicy.BEST_EFFORT,
             history=HistoryPolicy.KEEP_LAST,
             durability=DurabilityPolicy.VOLATILE,
         )
+
+    def _qos_reliable(self) -> QoSProfile:
+        """RELIABLE para tópicos de localização (pose) — compatível com SLAM Toolbox."""
+        return QoSProfile(
+            depth=10,
+            reliability=ReliabilityPolicy.RELIABLE,
+            history=HistoryPolicy.KEEP_LAST,
+            durability=DurabilityPolicy.VOLATILE,
+        )
+
+    # Tópicos que precisam de QoS RELIABLE (publicados por nós de localização)
+    _RELIABLE_TOPICS = {"pose"}
 
     def _qos_tf(self) -> QoSProfile:
         return QoSProfile(
@@ -193,7 +206,13 @@ class SensorCollector(Node):
 
                 return _write
 
-            qos = self._qos_tf() if is_global else self._qos_sensor()
+            short_name = tname.lstrip("/").split("/")[-1]
+            if is_global:
+                qos = self._qos_tf()
+            elif short_name in self._RELIABLE_TOPICS:
+                qos = self._qos_reliable()
+            else:
+                qos = self._qos_sensor()
             sub = self.create_subscription(
                 msg_cls,
                 tname,
