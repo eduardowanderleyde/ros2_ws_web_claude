@@ -78,11 +78,11 @@ export default function App() {
     return () => document.removeEventListener('mousedown', handler)
   }, [])
 
-  // ── Status do robot (polling) ─────────────────────────────────────
+  // ── Status do robot (polling rápido) ─────────────────────────────
   useEffect(() => {
     const t = setInterval(() =>
       fetch(`${API}/status`).then(r => r.json()).then(d => d && setStatus(d)).catch(() => {}),
-    1000)
+    300)
     return () => clearInterval(t)
   }, [])
 
@@ -253,38 +253,39 @@ export default function App() {
   const isConnected = connStatus === 'connected'
 
   return (
-    <div style={{ fontFamily: 'system-ui, sans-serif', background: '#0d0f14', color: '#e6e9ef', minHeight: '100vh', padding: '1.5rem' }}>
+    <div style={{ fontFamily: 'system-ui, sans-serif', background: '#0d0f14', color: '#e6e9ef', height: '100vh', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
 
-      {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', borderBottom: '1px solid #2a3142', paddingBottom: '1rem' }}>
-        <h1 style={{ margin: 0, fontSize: '1.4rem', color: '#6ee7b7' }}>Fleet UI</h1>
-        <div style={{ display: 'flex', gap: '1.5rem', fontSize: '0.82rem', fontFamily: 'monospace', alignItems: 'center' }}>
-          <span style={{ color: '#8b92a8' }}>
-            Nav: <span style={{ color: robot.nav_state === 'navigating' ? '#6ee7b7' : robot.nav_state === 'failed' ? '#f87171' : '#e6e9ef' }}>
-              {robot.nav_state || '—'}
-            </span>
-          </span>
-          <span style={{ color: '#8b92a8' }}>
-            Coleta: <span style={{ color: robot.collection_on ? '#6ee7b7' : '#8b92a8' }}>{robot.collection_on ? 'ON' : 'OFF'}</span>
-          </span>
-          <span style={{ color: '#8b92a8' }}>
-            Pose: <span style={{ color: pose.valid ? '#e6e9ef' : '#8b92a8' }}>
-              {pose.valid ? `x=${pose.x.toFixed(2)} y=${pose.y.toFixed(2)} yaw=${deg(pose.yaw)}°` : 'aguardando…'}
-            </span>
-          </span>
+      {/* Header compacto */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.5rem 1.25rem', borderBottom: '1px solid #2a3142', flexShrink: 0 }}>
+        <h1 style={{ margin: 0, fontSize: '1.1rem', color: '#6ee7b7', fontWeight: 700 }}>Fleet UI</h1>
+
+        {/* Status em linha */}
+        <div style={{ display: 'flex', gap: '0', fontSize: '0.78rem', fontFamily: 'monospace', alignItems: 'stretch', background: '#161a22', border: '1px solid #2a3142', borderRadius: '8px', overflow: 'hidden' }}>
+          {[
+            { label: 'Nav', value: robot.nav_state || '—', color: robot.nav_state === 'navigating' ? '#6ee7b7' : robot.nav_state === 'failed' ? '#f87171' : '#e6e9ef' },
+            { label: 'Coleta', value: robot.collection_on ? 'ON' : 'OFF', color: robot.collection_on ? '#6ee7b7' : '#8b92a8' },
+            { label: 'x', value: pose.valid ? pose.x.toFixed(3) : '—', color: pose.valid ? '#93c5fd' : '#8b92a8' },
+            { label: 'y', value: pose.valid ? pose.y.toFixed(3) : '—', color: pose.valid ? '#93c5fd' : '#8b92a8' },
+            { label: 'yaw', value: pose.valid ? `${deg(pose.yaw)}°` : '—', color: pose.valid ? '#93c5fd' : '#8b92a8' },
+          ].map(({ label, value, color }) => (
+            <div key={label} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '0.3rem 0.7rem', borderRight: '1px solid #2a3142' }}>
+              <span style={{ fontSize: '0.62rem', color: '#4b5563', textTransform: 'uppercase', letterSpacing: '0.04em' }}>{label}</span>
+              <span style={{ color, fontWeight: 600, marginTop: '0.05rem' }}>{value}</span>
+            </div>
+          ))}
           <button
             onClick={resetToOrigin}
             disabled={resetting}
-            title="Envia robô para (0, 0, 0)"
-            style={{ ...btnStyle(resetting ? '#1a2a3a' : '#161a22', resetMsg && resetMsg !== 'ok' ? '#f87171' : resetMsg === 'ok' ? '#6ee7b7' : '#6366f1'), fontSize: '0.78rem', padding: '0.3rem 0.75rem' }}
+            title="Envia robô para (0,0,0)"
+            style={{ background: 'none', border: 'none', cursor: resetting ? 'not-allowed' : 'pointer', padding: '0.3rem 0.75rem', color: resetMsg === 'ok' ? '#6ee7b7' : resetMsg ? '#f87171' : '#6366f1', fontWeight: 700, fontSize: '0.8rem', opacity: resetting ? 0.6 : 1 }}
           >
-            {resetting ? '⏳ indo…' : resetMsg === 'ok' ? '✓ indo para origem' : resetMsg ? `✗ ${resetMsg}` : '⟳ Reiniciar'}
+            {resetting ? '⏳' : resetMsg === 'ok' ? '✓' : resetMsg ? '✗' : '⟳ Origem'}
           </button>
         </div>
       </div>
 
       {/* ── Barra de conexão ────────────────────────────────────────── */}
-      <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', marginBottom: '1.25rem', position: 'relative' }}>
+      <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', padding: '0.4rem 1.25rem', borderBottom: '1px solid #2a3142', flexShrink: 0, position: 'relative' }}>
 
         {/* Botão Conectar robô */}
         <div ref={panelRef} style={{ position: 'relative' }}>
@@ -470,8 +471,8 @@ export default function App() {
         )}
       </div>
 
-      {/* Layout principal */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.25rem', height: 'calc(100vh - 180px)' }}>
+      {/* Layout principal — ocupa o restante da viewport */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', flex: 1, minHeight: 0, padding: '0.75rem 1.25rem 1rem' }}>
 
         {/* Coluna esquerda: config */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
