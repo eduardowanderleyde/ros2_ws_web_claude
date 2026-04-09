@@ -72,6 +72,7 @@ class RobotRuntime:
     route_poses: List[PoseStamped] = field(default_factory=list)
     last_saved: Optional[XYYaw] = None
     goal_handle = None
+    pending_goal_pose: Optional[PoseStamped] = None  # pose atual em navegação
 
 
 class FleetOrchestrator(Node):
@@ -277,6 +278,8 @@ class FleetOrchestrator(Node):
         if route_label:
             st.current_route = route_label
 
+        # Salva a 1ª pose do goal para registrar na rota quando concluído
+        st.pending_goal_pose = poses[0] if poses else None
         send_future = client.send_goal_async(goal, feedback_callback=self._make_feedback_cb(robot_id))
         send_future.add_done_callback(self._make_goal_response_cb(robot_id))
         return True, "Navigation started", ""
@@ -330,10 +333,19 @@ class FleetOrchestrator(Node):
                 self.get_logger().error(f"Nav2 result {robot_id}: {ex}")
                 return
             if status == GoalStatus.STATUS_SUCCEEDED:
-                # During recording, restore "recording" state so scripts can poll it
+                # Durante recording: salva waypoint atingido diretamente (não depende de TF)
+                if st.is_recording and st.pending_goal_pose is not None:
+                    st.route_poses.append(st.pending_goal_pose)
+                    self.get_logger().info(
+                        f"[record] pose salva #{len(st.route_poses)}: "
+                        f"x={st.pending_goal_pose.pose.position.x:.3f} "
+                        f"y={st.pending_goal_pose.pose.position.y:.3f}"
+                    )
+                st.pending_goal_pose = None
                 st.nav_state = "recording" if st.is_recording else "idle"
                 st.last_error = ""
             else:
+                st.pending_goal_pose = None
                 st.nav_state = "recording" if st.is_recording else "failed"
                 st.last_error = "NAV2_ABORTED"
         return _cb
