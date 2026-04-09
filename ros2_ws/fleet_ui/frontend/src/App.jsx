@@ -228,8 +228,9 @@ export default function App() {
     }
   }
 
-  const pose  = status.pose || {}
-  const robot = status.robots?.[0] || {}
+  const pose    = status.pose || {}
+  const robot   = status.robots?.[0] || {}
+  const nav2Ok  = status.nav2_ready === true
 
   const lineColor = (line) => {
     if (line.includes('[OK]'))     return '#6ee7b7'
@@ -262,6 +263,7 @@ export default function App() {
         {/* Status em linha */}
         <div style={{ display: 'flex', gap: '0', fontSize: '0.78rem', fontFamily: 'monospace', alignItems: 'stretch', background: '#161a22', border: '1px solid #2a3142', borderRadius: '8px', overflow: 'hidden' }}>
           {[
+            { label: 'Nav2', value: nav2Ok ? 'ON' : 'OFF', color: nav2Ok ? '#6ee7b7' : '#f87171' },
             { label: 'Nav', value: robot.nav_state || '—', color: robot.nav_state === 'navigating' ? '#6ee7b7' : robot.nav_state === 'failed' ? '#f87171' : '#e6e9ef' },
             { label: 'Coleta', value: robot.collection_on ? 'ON' : 'OFF', color: robot.collection_on ? '#6ee7b7' : '#8b92a8' },
             { label: 'x', value: pose.valid ? pose.x.toFixed(3) : '—', color: pose.valid ? '#93c5fd' : '#8b92a8' },
@@ -516,13 +518,18 @@ export default function App() {
               ⚠ Conecte um robô antes de executar.
             </div>
           )}
+          {isConnected && !nav2Ok && (
+            <div style={{ color: '#f87171', fontSize: '0.82rem', padding: '0.5rem 0.75rem', background: 'rgba(248,113,113,0.08)', borderRadius: '6px', border: '1px solid rgba(248,113,113,0.2)' }}>
+              ✗ Nav2 não está rodando — inicie o T2 antes de executar.
+            </div>
+          )}
 
           <div style={{ display: 'flex', gap: '0.75rem' }}>
             <button
               onClick={run}
-              disabled={running || !isConnected}
-              title={!isConnected ? 'Conecte um robô primeiro' : ''}
-              style={btnStyle(running || !isConnected ? '#1a3a2a' : '#065f46', '#6ee7b7', '1rem', running || !isConnected)}
+              disabled={running || !isConnected || !nav2Ok}
+              title={!isConnected ? 'Conecte um robô primeiro' : !nav2Ok ? 'Nav2 não está rodando (inicie o T2)' : ''}
+              style={btnStyle(running || !isConnected || !nav2Ok ? '#1a3a2a' : '#065f46', '#6ee7b7', '1rem', running || !isConnected || !nav2Ok)}
             >
               {running ? '⏳ A executar…' : '▶ Executar'}
             </button>
