@@ -1078,7 +1078,7 @@ def main() -> int:
         default=["scan", "odom", "imu", "pose"],
         help="Tópicos relativos ao namespace do robô",
     )
-    pr.add_argument("--wait-goal", type=float, default=120.0, help="Timeout por goal (s)")
+    pr.add_argument("--wait-goal", type=float, default=300.0, help="Timeout por goal (s)")
     pr.add_argument(
         "--no-use-sim-time",
         action="store_true",
