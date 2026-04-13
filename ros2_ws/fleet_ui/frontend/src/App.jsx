@@ -16,7 +16,7 @@ const EXAMPLE_RECORD = JSON.stringify({
   robot: "default",
   route: "percurso1",
   collect: true,
-  topics: ["scan", "odom", "imu", "amcl_pose", "tf"],
+  topics: ["scan", "odom", "imu", "pose"],
   initial_pose: [0, 0, 0],
   points: [
     [0.5, 0.0, 0.0],
@@ -31,7 +31,7 @@ const EXAMPLE_REPLAY = JSON.stringify({
   robot: "default",
   route: "percurso1",
   collect: true,
-  topics: ["scan", "odom", "imu", "amcl_pose", "tf"],
+  topics: ["scan", "odom", "imu", "pose"],
   initial_pose: [0, 0, 0],
   return_to_start: [0, 0, 0]
 }, null, 2)
@@ -615,6 +615,7 @@ export default function App() {
                   m.imu_accel_mean_ms2     != null && { label: 'IMU accel média',  value: `${m.imu_accel_mean_ms2} m/s²`, color: '#c4b5fd' },
                   m.imu_accel_variance_ms2 != null && { label: 'IMU variância',    value: `${m.imu_accel_variance_ms2}`,  color: '#c4b5fd' },
                 ].filter(Boolean)
+                const pathUnavailable = m.path_unavailable === true && realPath == null
                 return (
                   <div style={{ background: '#161a22', border: '1px solid #2a3142', borderRadius: '8px', padding: '0.75rem 1rem' }}>
                     <div style={{ fontSize: '0.75rem', color: '#8b92a8', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.6rem' }}>
@@ -628,6 +629,11 @@ export default function App() {
                         </div>
                       ))}
                     </div>
+                    {pathUnavailable && (
+                      <div style={{ marginTop: '0.6rem', fontSize: '0.75rem', color: '#fbbf24', background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.2)', borderRadius: '6px', padding: '0.4rem 0.6rem' }}>
+                        ⚠ Percurso indisponível — adicione <code style={{ fontFamily: 'monospace', background: 'rgba(255,255,255,0.08)', padding: '0 0.25rem', borderRadius: '3px' }}>"pose"</code> nos topics para medir deslocamento real.
+                      </div>
+                    )}
                   </div>
                 )
               })()}
