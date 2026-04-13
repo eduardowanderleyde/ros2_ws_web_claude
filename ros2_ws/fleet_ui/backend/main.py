@@ -172,13 +172,16 @@ async def lifespan(app: FastAPI):
                 except Exception as e:
                     node.get_logger().warning(f"map_cb error: {e}")
 
-            # Verifica Nav2 periodicamente
+            # Verifica Nav2 periodicamente via /navigate_to_pose
             from rclpy.action import ActionClient as RosActionClient
-            from nav2_msgs.action import NavigateThroughPoses as _NTP
-            _nav2_client = RosActionClient(node, _NTP, "/navigate_through_poses")
+            from nav2_msgs.action import NavigateToPose as _NTP
+            _nav2_client = RosActionClient(node, _NTP, "/navigate_to_pose")
 
             def nav2_check_cb():
-                ready = _nav2_client.server_is_ready()
+                try:
+                    ready = _nav2_client.server_is_ready()
+                except Exception:
+                    ready = False
                 with _status_lock:
                     _fleet_status["nav2_ready"] = ready
 
