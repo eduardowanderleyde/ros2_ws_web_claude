@@ -101,7 +101,9 @@ async def lifespan(app: FastAPI):
             from nav_msgs.msg import OccupancyGrid
 
             rclpy.init()
-            node = Node("fleet_ui_bridge")
+            node = Node("fleet_ui_bridge", parameter_overrides=[
+                rclpy.parameter.Parameter("use_sim_time", rclpy.parameter.Parameter.Type.BOOL, True)
+            ])
 
             def fleet_cb(msg):
                 with _status_lock:
@@ -170,6 +172,18 @@ async def lifespan(app: FastAPI):
                 except Exception as e:
                     node.get_logger().warning(f"map_cb error: {e}")
 
+            # Verifica Nav2 periodicamente
+            from rclpy.action import ActionClient as RosActionClient
+            from nav2_msgs.action import NavigateThroughPoses as _NTP
+            _nav2_client = RosActionClient(node, _NTP, "/navigate_through_poses")
+
+            def nav2_check_cb():
+                ready = _nav2_client.server_is_ready()
+                with _status_lock:
+                    _fleet_status["nav2_ready"] = ready
+
+            node.create_timer(2.0, nav2_check_cb)
+
             node.create_subscription(FleetStatus, "fleet/status", fleet_cb, 10)
             node.create_subscription(PoseWithCovarianceStamped, "amcl_pose", amcl_cb, 10)
             node.create_subscription(PoseWithCovarianceStamped, "pose", amcl_cb, 10)
@@ -228,7 +242,7 @@ def _build_cmd(cfg: dict) -> list[str]:
     single = not robot or robot == "default"
     route = cfg.get("route", "percurso1")
     collect = cfg.get("collect", True)
-    topics = cfg.get("topics", ["scan", "odom", "imu"])
+    topics = cfg.get("topics", ["scan", "odom", "imu", "pose"])
     ip = cfg.get("initial_pose")
     args = [
         "python3", str(Path(WORKSPACE) / "scripts" / "experiment_repeatability.py"),
@@ -447,6 +461,103 @@ async def disable_collection(robot_id: str = ""):
         json.dumps({"robot_id": robot_id}),
     )
     return {"success": ok, "message": out}
+
+
+@app.get("/api/discover_robots")
+async def discover_robots(subnet: str = ""):
+    """
+    Varre a subnet por hosts com porta 22 aberta e testa se têm ROS 2.
+    subnet ex: '192.168.1' (varre .1–.254).
+    Se omitido, detecta automaticamente a subnet local.
+    """
+    import ipaddress
+    import socket
+    import concurrent.futures
+
+    # Detecta subnet local se não informada
+    if not subnet:
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            local_ip = s.getsockname()[0]
+            s.close()
+            subnet = ".".join(local_ip.split(".")[:3])
+            print(f"[discover] IP local: {local_ip}  subnet: {subnet}")
+        except Exception as e:
+            print(f"[discover] falhou auto-detecção: {e}")
+            return {"found": [], "subnet_scanned": "", "error": "Não foi possível detectar subnet local. Informe manualmente (ex: 192.168.1)"}
+
+    subnet = subnet.strip()
+
+    # Valida formato
+    try:
+        parts = subnet.split(".")
+        if len(parts) != 3 or not all(p.isdigit() and 0 <= int(p) <= 255 for p in parts):
+            return {"found": [], "subnet_scanned": subnet, "error": f"Subnet inválida: {subnet}. Use formato X.X.X (ex: 192.168.1)"}
+    except Exception:
+        return {"found": [], "subnet_scanned": subnet, "error": f"Subnet inválida: {subnet}"}
+
+    targets = [f"{subnet}.{i}" for i in range(1, 255)]
+
+    def _check(ip: str) -> dict | None:
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(0.3)
+            result = sock.connect_ex((ip, 22))
+            sock.close()
+            if result != 0:
+                return None
+            # Tenta resolver hostname
+            try:
+                hostname = socket.gethostbyaddr(ip)[0]
+            except Exception:
+                hostname = ip
+            # Heurística: robotics hostnames
+            is_robot = any(kw in hostname.lower() for kw in ("tb", "turtle", "robot", "pi", "nano", "jetson", "ros"))
+            return {"ip": ip, "hostname": hostname, "ssh": True, "likely_robot": is_robot}
+        except Exception:
+            return None
+
+    found = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=60) as ex:
+        for res in ex.map(_check, targets):
+            if res:
+                found.append(res)
+
+    found.sort(key=lambda x: (not x["likely_robot"], x["ip"]))
+    return {"found": found, "subnet_scanned": subnet}
+
+
+@app.post("/api/test_ssh")
+async def test_ssh(body: dict):
+    """Testa SSH num host: verifica conexão e presença do ROS 2."""
+    host = (body.get("host") or "").strip()
+    user = (body.get("user") or "ubuntu").strip()
+    port = int(body.get("port") or 22)
+    if not host:
+        return JSONResponse({"success": False, "message": "host vazio"}, status_code=400)
+    try:
+        cmd = (
+            f"ssh -o ConnectTimeout=4 -o StrictHostKeyChecking=no -o BatchMode=yes "
+            f"-p {port} {user}@{host} "
+            f"'which ros2 && ros2 --version 2>/dev/null || echo NO_ROS2'"
+        )
+        r = subprocess.run(["bash", "-c", cmd], capture_output=True, text=True, timeout=8)
+        out = (r.stdout or "").strip()
+        err = (r.stderr or "").strip()
+        if r.returncode != 0:
+            return {"success": False, "message": err or f"SSH falhou (exit {r.returncode})"}
+        has_ros = "NO_ROS2" not in out and out
+        return {
+            "success": True,
+            "has_ros2": has_ros,
+            "ros2_version": out if has_ros else None,
+            "message": f"ROS 2 encontrado: {out}" if has_ros else "SSH OK mas ROS 2 não encontrado",
+        }
+    except subprocess.TimeoutExpired:
+        return {"success": False, "message": "Timeout ao conectar via SSH"}
+    except Exception as e:
+        return {"success": False, "message": str(e)}
 
 
 if __name__ == "__main__":

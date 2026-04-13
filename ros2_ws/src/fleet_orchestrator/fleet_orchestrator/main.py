@@ -12,7 +12,7 @@ import yaml
 from action_msgs.msg import GoalStatus
 from ament_index_python.packages import get_package_share_directory
 from geometry_msgs.msg import PoseStamped, Quaternion
-from nav2_msgs.action import NavigateThroughPoses
+from nav2_msgs.action import NavigateToPose, FollowWaypoints
 from rclpy.action import ActionClient
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.duration import Duration
@@ -72,6 +72,7 @@ class RobotRuntime:
     route_poses: List[PoseStamped] = field(default_factory=list)
     last_saved: Optional[XYYaw] = None
     goal_handle = None
+    pending_goal_pose: Optional[PoseStamped] = None  # pose atual em navegação
 
 
 class FleetOrchestrator(Node):
@@ -99,10 +100,15 @@ class FleetOrchestrator(Node):
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
         self._nav_clients: Dict[str, ActionClient] = {}
+        self._wp_clients: Dict[str, ActionClient] = {}
         for rid in self._robots:
-            aname = self._action_name(rid)
             self._nav_clients[rid] = ActionClient(
-                self, NavigateThroughPoses, aname, callback_group=self._cb_group
+                self, NavigateToPose, "/navigate_to_pose" if rid == "" else f"/{rid}/navigate_to_pose",
+                callback_group=self._cb_group
+            )
+            self._wp_clients[rid] = ActionClient(
+                self, FollowWaypoints, "/follow_waypoints" if rid == "" else f"/{rid}/follow_waypoints",
+                callback_group=self._cb_group
             )
 
         self.create_service(StartRecord, "start_record", self._cb_start_record)
@@ -140,7 +146,18 @@ class FleetOrchestrator(Node):
         return self._role(robot_id) == "MUUT"
 
     def _known_robot(self, robot_id: str) -> bool:
-        return robot_id in self._state
+        if robot_id not in self._state:
+            if robot_id == "":
+                self._state[""] = RobotRuntime()
+                self._nav_clients[""] = ActionClient(
+                    self, NavigateToPose, "/navigate_to_pose", callback_group=self._cb_group
+                )
+                self._wp_clients[""] = ActionClient(
+                    self, FollowWaypoints, "/follow_waypoints", callback_group=self._cb_group
+                )
+            else:
+                return False
+        return True
 
     def _subdir(self, robot_id: str) -> str:
         return "default" if robot_id == "" else robot_id
@@ -149,12 +166,12 @@ class FleetOrchestrator(Node):
         return os.path.join(self._routes_dir, self._subdir(robot_id))
 
     def _map_base(self, robot_id: str) -> tuple[str, str]:
-        if self._use_shared and robot_id == "":
+        if robot_id == "":
             return "map", "base_link"
         return f"{robot_id}/map", f"{robot_id}/base_link"
 
     def _action_name(self, robot_id: str) -> str:
-        if self._use_shared and robot_id == "":
+        if robot_id == "":
             return "/navigate_through_poses"
         return f"/{robot_id}/navigate_through_poses"
 
@@ -261,22 +278,30 @@ class FleetOrchestrator(Node):
 
     def _send_nav_poses(self, robot_id: str, poses: List[PoseStamped], route_label: str) -> tuple[bool, str, str]:
         st = self._state[robot_id]
-        client = self._nav_clients[robot_id]
-        if not client.wait_for_server(timeout_sec=3.0):
-            st.nav_state = "failed"
-            st.last_error = "NAV2_UNAVAILABLE"
-            an = self._action_name(robot_id)
-            return False, f"Nav2 action server not available: {an}", "NAV2_UNAVAILABLE"
+        if len(poses) == 1:
+            client = self._nav_clients[robot_id]
+            if not client.wait_for_server(timeout_sec=3.0):
+                st.nav_state = "failed"
+                st.last_error = "NAV2_UNAVAILABLE"
+                return False, "Nav2 navigate_to_pose not available", "NAV2_UNAVAILABLE"
+            goal = NavigateToPose.Goal()
+            goal.pose = poses[0]
+        else:
+            client = self._wp_clients[robot_id]
+            if not client.wait_for_server(timeout_sec=3.0):
+                st.nav_state = "failed"
+                st.last_error = "NAV2_UNAVAILABLE"
+                return False, "Nav2 follow_waypoints not available", "NAV2_UNAVAILABLE"
+            goal = FollowWaypoints.Goal()
+            goal.poses = poses
 
-        goal = NavigateThroughPoses.Goal()
-        goal.poses = poses
         st.is_navigating = True
         st.nav_state = "navigating"
         st.last_error = ""
-        # Preserve current_route when called from go_to_point during recording
         if route_label:
             st.current_route = route_label
 
+        st.pending_goal_pose = poses[0] if poses else None
         send_future = client.send_goal_async(goal, feedback_callback=self._make_feedback_cb(robot_id))
         send_future.add_done_callback(self._make_goal_response_cb(robot_id))
         return True, "Navigation started", ""
@@ -330,10 +355,19 @@ class FleetOrchestrator(Node):
                 self.get_logger().error(f"Nav2 result {robot_id}: {ex}")
                 return
             if status == GoalStatus.STATUS_SUCCEEDED:
-                # During recording, restore "recording" state so scripts can poll it
+                # Durante recording: salva waypoint atingido diretamente (não depende de TF)
+                if st.is_recording and st.pending_goal_pose is not None:
+                    st.route_poses.append(st.pending_goal_pose)
+                    self.get_logger().info(
+                        f"[record] pose salva #{len(st.route_poses)}: "
+                        f"x={st.pending_goal_pose.pose.position.x:.3f} "
+                        f"y={st.pending_goal_pose.pose.position.y:.3f}"
+                    )
+                st.pending_goal_pose = None
                 st.nav_state = "recording" if st.is_recording else "idle"
                 st.last_error = ""
             else:
+                st.pending_goal_pose = None
                 st.nav_state = "recording" if st.is_recording else "failed"
                 st.last_error = "NAV2_ABORTED"
         return _cb

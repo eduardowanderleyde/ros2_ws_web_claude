@@ -20,8 +20,10 @@ from rosbag2_py import ConverterOptions, SequentialWriter, StorageOptions, Topic
 
 from fleet_msgs.srv import CollectionStatus, DisableCollection, EnableCollection
 
+from geometry_msgs.msg import PoseWithCovarianceStamped
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import Imu, LaserScan
+from tf2_msgs.msg import TFMessage
 
 
 @dataclass
@@ -34,10 +36,19 @@ class RobotSession:
 
 
 class SensorCollector(Node):
+    # Tópicos com prefixo de robot_id
     _TYPE_MAP = {
         "scan": ("sensor_msgs/msg/LaserScan", LaserScan),
         "odom": ("nav_msgs/msg/Odometry", Odometry),
-        "imu": ("sensor_msgs/msg/Imu", Imu),
+        "imu":  ("sensor_msgs/msg/Imu", Imu),
+        # Localização: inclua apenas um destes conforme o modo usado
+        "amcl_pose": ("geometry_msgs/msg/PoseWithCovarianceStamped", PoseWithCovarianceStamped),  # AMCL (mapa fixo) ← padrão recomendado
+        "pose":      ("geometry_msgs/msg/PoseWithCovarianceStamped", PoseWithCovarianceStamped),  # SLAM Toolbox (live)
+    }
+    # Tópicos globais (sem prefixo de robot_id, nome fixo)
+    _GLOBAL_TOPICS = {
+        "tf":        ("/tf",        "tf2_msgs/msg/TFMessage", TFMessage),
+        "tf_static": ("/tf_static", "tf2_msgs/msg/TFMessage", TFMessage),
     }
 
     def __init__(self) -> None:
@@ -64,12 +75,49 @@ class SensorCollector(Node):
         return "default" if robot_id == "" else robot_id
 
     def _known(self, robot_id: str) -> bool:
-        return robot_id in self._sessions
+        if robot_id not in self._sessions:
+            if robot_id == "":
+                self._sessions[""] = RobotSession()
+            else:
+                return False
+        return True
 
     def _qos_sensor(self) -> QoSProfile:
+        """BEST_EFFORT para sensores (scan, odom, imu) — compatível com Gazebo."""
         return QoSProfile(
             depth=10,
             reliability=ReliabilityPolicy.BEST_EFFORT,
+            history=HistoryPolicy.KEEP_LAST,
+            durability=DurabilityPolicy.VOLATILE,
+        )
+
+    def _qos_reliable(self) -> QoSProfile:
+        """RELIABLE + VOLATILE — compatível com SLAM Toolbox /pose."""
+        return QoSProfile(
+            depth=10,
+            reliability=ReliabilityPolicy.RELIABLE,
+            history=HistoryPolicy.KEEP_LAST,
+            durability=DurabilityPolicy.VOLATILE,
+        )
+
+    def _qos_transient(self) -> QoSProfile:
+        """RELIABLE + TRANSIENT_LOCAL — obrigatório para /amcl_pose (AMCL publica latched)."""
+        return QoSProfile(
+            depth=10,
+            reliability=ReliabilityPolicy.RELIABLE,
+            history=HistoryPolicy.KEEP_LAST,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
+
+    # Tópicos com QoS RELIABLE + VOLATILE (SLAM Toolbox)
+    _RELIABLE_TOPICS = {"pose"}
+    # Tópicos com QoS RELIABLE + TRANSIENT_LOCAL (AMCL publica latched)
+    _TRANSIENT_LOCAL_TOPICS = {"amcl_pose"}
+
+    def _qos_tf(self) -> QoSProfile:
+        return QoSProfile(
+            depth=100,
+            reliability=ReliabilityPolicy.RELIABLE,
             history=HistoryPolicy.KEEP_LAST,
             durability=DurabilityPolicy.VOLATILE,
         )
@@ -103,19 +151,22 @@ class SensorCollector(Node):
             resp.error_code = "UNSUPPORTED_OUTPUT_MODE"
             return resp
 
-        resolved: List[tuple[str, str, Type]] = []
+        # resolved: (topic_name, type_str, msg_cls, is_global)
+        resolved: List[tuple[str, str, Type, bool]] = []
         for short in req.topics:
-            s = short.strip()
-            if s.startswith("/"):
-                s = s.lstrip("/")
-            if s not in self._TYPE_MAP:
+            s = short.strip().lstrip("/")
+            if s in self._GLOBAL_TOPICS:
+                tname, type_str, cls = self._GLOBAL_TOPICS[s]
+                resolved.append((tname, type_str, cls, True))
+            elif s in self._TYPE_MAP:
+                tname = self._topic_name(rid, s)
+                type_str, cls = self._TYPE_MAP[s]
+                resolved.append((tname, type_str, cls, False))
+            else:
                 resp.success = False
                 resp.message = f"Unknown topic short name: {short!r}"
                 resp.error_code = "NO_VALID_TOPICS"
                 return resp
-            tname = self._topic_name(rid, s)
-            type_str, _cls = self._TYPE_MAP[s]
-            resolved.append((tname, type_str, _cls))
 
         if not resolved:
             resp.success = False
@@ -146,20 +197,26 @@ class SensorCollector(Node):
         sess.is_collecting = True
 
         topic_id = 0
-        for tname, type_str, msg_cls in resolved:
+        for tname, type_str, msg_cls, is_global in resolved:
             meta = TopicMetadata(topic_id, tname, type_str, "cdr", [])
             topic_id += 1
             writer.create_topic(meta)
 
-            def make_cb(full_name: str, cls: Type):
+            def make_cb(full_name: str, cls: Type, global_topic: bool):
                 def _write(msg) -> None:
                     if sess.writer is None:
                         return
                     try:
                         data = serialize_message(msg)
-                        stamp_ns = self.get_clock().now().nanoseconds
-                        if hasattr(msg, "header") and msg.header.stamp.sec != 0:
+                        # TFMessage: usa stamp do primeiro transform se disponível
+                        if global_topic and hasattr(msg, "transforms") and msg.transforms:
+                            stamp_ns = Time.from_msg(msg.transforms[0].header.stamp).nanoseconds
+                            if stamp_ns == 0:
+                                stamp_ns = self.get_clock().now().nanoseconds
+                        elif hasattr(msg, "header") and msg.header.stamp.sec != 0:
                             stamp_ns = Time.from_msg(msg.header.stamp).nanoseconds
+                        else:
+                            stamp_ns = self.get_clock().now().nanoseconds
                         sess.writer.write(full_name, data, stamp_ns)
                         sess.bytes_written += len(data)
                     except Exception as ex:
@@ -167,11 +224,20 @@ class SensorCollector(Node):
 
                 return _write
 
+            short_name = tname.lstrip("/").split("/")[-1]
+            if is_global:
+                qos = self._qos_tf()
+            elif short_name in self._TRANSIENT_LOCAL_TOPICS:
+                qos = self._qos_transient()
+            elif short_name in self._RELIABLE_TOPICS:
+                qos = self._qos_reliable()
+            else:
+                qos = self._qos_sensor()
             sub = self.create_subscription(
                 msg_cls,
                 tname,
-                make_cb(tname, msg_cls),
-                self._qos_sensor(),
+                make_cb(tname, msg_cls, is_global),
+                qos,
             )
             sess.subscriptions.append(sub)
 
