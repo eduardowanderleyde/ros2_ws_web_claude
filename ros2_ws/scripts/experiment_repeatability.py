@@ -554,14 +554,18 @@ def _bag_compute_metrics(bag_path: Optional[str]) -> dict:
 
         # Prioridade de percurso:
         #   /amcl_pose (AMCL + mapa fixo — mais estável para experimentos reprodutíveis)
-        #   > /pose    (SLAM Toolbox live)
+        #   > odom     (50 Hz, integração contínua — melhor para SLAM onde /pose é esparso)
+        #   > /pose    (SLAM Toolbox live — ~0.01 Hz, poucos pontos, fallback drift-corrigido)
         #   > TF map→odom  (publicado pelo AMCL — atualiza só com movimento suficiente)
         #   > TF odom→base (publicado pelo diff drive Gazebo — movimento incremental)
-        #   > odom     (pouco fiável com SLAM ativo)
         ref_dur = duration_s or 1
         if amcl_path_m > 0.01:
             metrics["amcl_path_length_m"] = round(amcl_path_m, 3)
             metrics["amcl_avg_speed_ms"]  = round(amcl_path_m / ref_dur, 3)
+        elif odom_path_m > 0.01:
+            # Odom a 50 Hz — fonte primária para SLAM (integração contínua, sem saltos)
+            metrics["odom_path_length_m"] = round(odom_path_m, 3)
+            metrics["odom_avg_speed_ms"]  = round(odom_path_m / ref_dur, 3)
         elif pose_path_m > 0.01:
             metrics["pose_path_length_m"] = round(pose_path_m, 3)
             metrics["pose_avg_speed_ms"]  = round(pose_path_m / ref_dur, 3)
@@ -572,9 +576,6 @@ def _bag_compute_metrics(bag_path: Optional[str]) -> dict:
             # Fallback: TF odom→base (diff drive Gazebo). Relativo ao frame odom inicial.
             metrics["tf_path_length_m"] = round(tf_odom_path_m, 3)
             metrics["tf_avg_speed_ms"]  = round(tf_odom_path_m / ref_dur, 3)
-        elif odom_path_m > 0.001:
-            metrics["odom_path_length_m"] = round(odom_path_m, 3)
-            metrics["odom_avg_speed_ms"]  = round(odom_path_m / ref_dur, 3)
         elif odom_count > 0:
             metrics["path_unavailable"] = True  # robot no bag mas percurso indeterminável
         if scan_valid_counts:
@@ -596,7 +597,7 @@ def _bag_compute_metrics(bag_path: Optional[str]) -> dict:
                 "pose_avg_speed_ms":    "Velocidade média (SLAM)",
                 "tf_path_length_m":     "Percurso real (TF)",
                 "tf_avg_speed_ms":      "Velocidade média (TF)",
-                "odom_path_length_m":   "Percurso /odom",
+                "odom_path_length_m":   "Percurso /odom (50 Hz)",
                 "odom_avg_speed_ms":    "Velocidade média (odom)",
                 "scan_avg_valid_points": "Scan pontos válidos (média)",
                 "scan_min_valid_points": "Scan pontos válidos (mín)",

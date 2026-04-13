@@ -588,7 +588,7 @@ export default function App() {
               {job.result.bag_metrics && Object.keys(job.result.bag_metrics).length > 0 && (() => {
                 const m = job.result.bag_metrics
                 const dur = m.wall_duration_s ?? m.duration_s
-                // Prioridade: AMCL > SLAM /pose > TF > odom > teórico (waypoints)
+                // Prioridade: AMCL > odom (50Hz) > SLAM /pose > TF > teórico (waypoints)
                 const amclPath = m.amcl_path_length_m
                 const posePath = m.pose_path_length_m
                 const tfPath   = m.tf_path_length_m
