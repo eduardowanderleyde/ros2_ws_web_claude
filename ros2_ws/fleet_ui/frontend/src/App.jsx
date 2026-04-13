@@ -519,17 +519,17 @@ export default function App() {
             </div>
           )}
           {isConnected && !nav2Ok && (
-            <div style={{ color: '#f87171', fontSize: '0.82rem', padding: '0.5rem 0.75rem', background: 'rgba(248,113,113,0.08)', borderRadius: '6px', border: '1px solid rgba(248,113,113,0.2)' }}>
-              ✗ Nav2 não está rodando — inicie o T2 antes de executar.
+            <div style={{ color: '#fbbf24', fontSize: '0.82rem', padding: '0.5rem 0.75rem', background: 'rgba(251,191,36,0.08)', borderRadius: '6px', border: '1px solid rgba(251,191,36,0.2)' }}>
+              ⚠ Nav2 parece offline — verifique o T2. O experimento falhará se Nav2 não estiver ativo.
             </div>
           )}
 
           <div style={{ display: 'flex', gap: '0.75rem' }}>
             <button
               onClick={run}
-              disabled={running || !isConnected || !nav2Ok}
-              title={!isConnected ? 'Conecte um robô primeiro' : !nav2Ok ? 'Nav2 não está rodando (inicie o T2)' : ''}
-              style={btnStyle(running || !isConnected || !nav2Ok ? '#1a3a2a' : '#065f46', '#6ee7b7', '1rem', running || !isConnected || !nav2Ok)}
+              disabled={running || !isConnected}
+              title={!isConnected ? 'Conecte um robô primeiro' : ''}
+              style={btnStyle(running || !isConnected ? '#1a3a2a' : '#065f46', '#6ee7b7', '1rem', running || !isConnected)}
             >
               {running ? '⏳ A executar…' : '▶ Executar'}
             </button>
