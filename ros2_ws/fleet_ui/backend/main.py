@@ -172,20 +172,21 @@ async def lifespan(app: FastAPI):
                 except Exception as e:
                     node.get_logger().warning(f"map_cb error: {e}")
 
-            # Verifica Nav2 periodicamente via /navigate_to_pose
-            from rclpy.action import ActionClient as RosActionClient
-            from nav2_msgs.action import NavigateToPose as _NTP
-            _nav2_client = RosActionClient(node, _NTP, "/navigate_to_pose")
-
+            # Verifica Nav2 periodicamente via ros2 action list (mais confiável que ActionClient)
             def nav2_check_cb():
                 try:
-                    ready = _nav2_client.server_is_ready()
+                    env = {**os.environ}
+                    r = subprocess.run(
+                        ["bash", "-c", "source /opt/ros/jazzy/setup.bash 2>/dev/null; ros2 action list 2>/dev/null"],
+                        capture_output=True, text=True, timeout=3, env=env,
+                    )
+                    ready = "/navigate_to_pose" in r.stdout
                 except Exception:
                     ready = False
                 with _status_lock:
                     _fleet_status["nav2_ready"] = ready
 
-            node.create_timer(2.0, nav2_check_cb)
+            node.create_timer(3.0, nav2_check_cb)
 
             node.create_subscription(FleetStatus, "fleet/status", fleet_cb, 10)
             node.create_subscription(PoseWithCovarianceStamped, "amcl_pose", amcl_cb, 10)
