@@ -116,13 +116,106 @@ Os replays completaram apenas **27.6%** da duração do baseline e percorreram a
 
 ---
 
+## Experimento 4 — Linha reta 2 m (`linha_2m`)
+
+**Data:** 2026-04-15  
+**Rota:** linha reta de ~1.8 m  
+**Runs:** baseline + replay_01 + replay_02
+
+### Resultados
+
+| Métrica | baseline | replay_01 | replay_02 |
+|---------|----------|-----------|-----------|
+| Duração (s) | 18.26 | 15.08 | 16.60 |
+| Comprimento (m) | 1.789 | 1.718 | 1.638 |
+| Poses | 914 | 755 | 831 |
+
+#### Vs. referência (baseline)
+
+| Run | RMSE (m) | Erro endpoint (m) | Duração ratio |
+|-----|----------|-------------------|---------------|
+| replay_01 | 0.173 | **0.020** | 0.826 |
+| replay_02 | 1.422 | **1.554** | 0.909 |
+
+### Interpretação
+
+- **replay_01** apresentou erro de endpoint baixo (**20 mm**), mas RMSE de trajetória de 0.173 m, indicando que o caminho seguido diferiu moderadamente.
+- **replay_02 é inválido** — erro de endpoint de **1.55 m** indica falha de navegação (robô não concluiu o percurso na direção correta). Possivelmente erro no retorno ao ponto inicial entre runs.
+- Razão de duração < 0.83: o robô nos replays foi mais rápido ou não executou toda a rota (coleta inclui overhead de return_to_start no baseline).
+
+---
+
+## Experimento 5 — Curva 90° (`curva_90`)
+
+**Data:** 2026-04-15  
+**Rota:** percurso com curva de 90°, ~2.7–3.0 m  
+**Runs:** baseline + replay_01 + replay_02
+
+### Resultados
+
+| Métrica | baseline | replay_01 | replay_02 |
+|---------|----------|-----------|-----------|
+| Duração (s) | 63.74 | 22.66 | 32.26 |
+| Comprimento (m) | 2.993 | 2.685 | 2.755 |
+| Poses | 3188 | 1134 | 1614 |
+
+#### Vs. referência (baseline)
+
+| Run | RMSE (m) | Erro endpoint (m) | Duração ratio |
+|-----|----------|-------------------|---------------|
+| replay_01 | 1.039 | **1.670** | 0.356 |
+| replay_02 | 1.226 | **1.680** | 0.506 |
+
+#### RMSE entre replays
+
+| Par | RMSE (m) |
+|-----|----------|
+| replay_01 vs replay_02 | 0.407 |
+
+### Interpretação
+
+Experimento **problemático** — RMSE > 1 m e erro de endpoint > 1.6 m em ambos os replays. A rota foi percorrida em distância similar (~2.7 m vs 3.0 m do baseline), mas o robô não chegou ao mesmo ponto final. Os replays são mais consistentes entre si (RMSE 0.41 m) do que com o baseline (1.0–1.2 m), indicando que o Nav2 reproduziu uma trajetória diferente da gravada (possível replanning por divergência de pose inicial no frame SLAM).
+
+---
+
+## Experimento 6 — Zigue-zague (`zigzag`)
+
+**Data:** 2026-04-15  
+**Rota:** percurso em zigue-zague, ~2.7 m  
+**Runs:** baseline + replay_01 (replay_02 corrompido)
+
+### Resultados
+
+| Métrica | baseline | replay_01 |
+|---------|----------|-----------|
+| Duração (s) | 63.82 | 115.68 |
+| Comprimento (m) | 2.745 | 1.688 |
+| Poses | 3192 | 5785 |
+
+#### Vs. referência (baseline)
+
+| Run | RMSE (m) | Erro endpoint (m) | Duração ratio |
+|-----|----------|-------------------|---------------|
+| replay_01 | 0.504 | **0.804** | 1.813 |
+
+### Interpretação
+
+**replay_02 corrompido** (bag não lível — possível falha de escrita ao encerrar a coleta).
+
+**replay_01** percorreu menos distância (**1.69 m** vs **2.75 m** do baseline) em muito mais tempo (**115 s** vs **64 s**) — sinal claro de que o Nav2 ficou replaneando por conflito de localização SLAM. Erro de endpoint de **804 mm**. O experimento é considerado inválido por percurso incompleto.
+
+---
+
 ## Comparativo geral
 
 | Experimento | Percurso | N runs | RMSE médio (m) | Válido |
 |-------------|----------|--------|----------------|--------|
-| teste_linha | 1.21 m, linha | 2 | **0.0097** | ✓ |
+| teste_linha | 1.21 m, linha | 2 | **0.010** | ✓ |
 | exp_val02 | 2.30 m, L shape | 3 | 0.092–0.167 | ✓ |
 | exp_val01 | 4.81 m | 3 | ~1.58 | ✗ (incompleto) |
+| linha_2m | 1.79 m, linha | 3 | 0.17 (r1) / 1.42 (r2) | parcial |
+| curva_90 | 2.99 m, curva | 3 | 1.04–1.23 | ✗ (replays divergentes) |
+| zigzag | 2.75 m, zigue-zague | 2 | 0.50 | ✗ (incompleto, bag corrompido) |
 
 ---
 
@@ -144,8 +237,10 @@ Dados da coleta MCAP (`/odom`, `/scan`, `/imu`):
 
 ## Conclusões preliminares
 
-1. **Alta repetibilidade em percursos curtos e simples:** RMSE < 10 mm para linha reta de ~1.2 m.
-2. **Repetibilidade moderada em percursos com curvas:** RMSE 80–170 mm para percurso em L de ~2.3 m.
+1. **Alta repetibilidade em percursos curtos e simples:** RMSE < 10 mm para linha reta de ~1.2 m (exp 1, condições controladas).
+2. **Repetibilidade moderada em percursos com curvas:** RMSE 80–170 mm para percurso em L de ~2.3 m (exp_val02, melhor resultado global).
 3. **Pose inicial impacta o resultado:** variações de ~10 cm na posição inicial (frame odom) propagam desvio na trajetória.
-4. **Duração estável:** razão de duração ≈ 0.997–1.010 nos experimentos válidos, indicando que o Nav2 mantém velocidade consistente entre runs.
-5. **Percursos longos (> 4 m) requerem atenção:** o exp_val01 falhou por percurso incompleto — necessário validar planejamento de trajetória antes de executar runs longos.
+4. **Duração estável (quando válido):** razão de duração ≈ 0.997–1.010 nos experimentos válidos (exp 1 e exp_val02).
+5. **Percursos longos ou complexos falham:** exp_val01 (4.8 m), curva_90 e zigzag apresentaram replays incompletos ou divergentes — o Nav2 replaneou com trajetórias diferentes quando a pose SLAM divergia entre baseline e replay.
+6. **SLAM acumula erro entre runs:** sem relocalização explícita entre baseline e replays, a divergência do frame `map` causa discrepâncias crescentes. Experimentos futuros devem iniciar cada run com pose SLAM conhecida (e.g., `/initialpose` preciso).
+7. **Bags corrompidos:** a coleta por rosbag2 falhou em pelo menos um caso (Exp C replay_02) — necessário verificar encerramento limpo da coleta.

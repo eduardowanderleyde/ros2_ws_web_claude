@@ -1,0 +1,106 @@
+{
+  "generated_at": "2026-04-15T01:59:00.448142+00:00",
+  "reference_run_index": 0,
+  "reference_label": "baseline",
+  "runs": [
+    {
+      "label": "baseline",
+      "bag_path": "/home/eduardo/Documentos/ros2_ws/ros2_ws/collections/default/2026-04-15_01-05-03_005714_ae8f75bf",
+      "traj_topic": "/odom",
+      "num_poses": 914,
+      "duration_sec": 18.26,
+      "path_length_m": 1.789191621163507,
+      "start_xy": [
+        8.434049250215713e-09,
+        2.539530650603222e-19
+      ],
+      "end_xy": [
+        1.7847654690381864,
+        -0.02570486259623673
+      ],
+      "static_traj_warn": false
+    },
+    {
+      "label": "replay_01",
+      "bag_path": "/home/eduardo/Documentos/ros2_ws/ros2_ws/collections/default/2026-04-15_01-07-30_828971_b21f40f9",
+      "traj_topic": "/odom",
+      "num_poses": 755,
+      "duration_sec": 15.08,
+      "path_length_m": 1.7178910455795187,
+      "start_xy": [
+        0.06808061084407765,
+        0.025021835749302408
+      ],
+      "end_xy": [
+        1.7808566296112707,
+        -0.044857537247306484
+      ],
+      "static_traj_warn": false
+    },
+    {
+      "label": "replay_02",
+      "bag_path": "/home/eduardo/Documentos/ros2_ws/ros2_ws/collections/default/2026-04-15_01-08-18_231957_11e31735",
+      "traj_topic": "/odom",
+      "num_poses": 831,
+      "duration_sec": 16.6,
+      "path_length_m": 1.6384066992729642,
+      "start_xy": [
+        1.7808566296112707,
+        -0.044857537247306484
+      ],
+      "end_xy": [
+        0.23084962642490542,
+        -0.0013901409662089449
+      ],
+      "static_traj_warn": false
+    }
+  ],
+  "pairwise_rmse_m": [
+    [
+      0.0,
+      0.17273218472262591,
+      1.4217421100549454
+    ],
+    [
+      0.17273218472262591,
+      0.0,
+      1.3087423835544456
+    ],
+    [
+      1.4217421100549454,
+      1.3087423835544456,
+      0.0
+    ]
+  ],
+  "vs_reference": [
+    {
+      "label": "baseline",
+      "final_endpoint_error_m": 0.0,
+      "duration_sec": 18.26,
+      "duration_ratio_vs_ref": 1.0,
+      "rmse_vs_ref_m": 0.0,
+      "mean_pointwise_distance_vs_ref_m": 0.0
+    },
+    {
+      "label": "replay_01",
+      "final_endpoint_error_m": 0.019547479938732286,
+      "duration_sec": 15.08,
+      "duration_ratio_vs_ref": 0.8258488499452354,
+      "rmse_vs_ref_m": 0.17273218472262591,
+      "mean_pointwise_distance_vs_ref_m": 0.13750929717470128
+    },
+    {
+      "label": "replay_02",
+      "final_endpoint_error_m": 1.5541060618929743,
+      "duration_sec": 16.6,
+      "duration_ratio_vs_ref": 0.9090909090909091,
+      "rmse_vs_ref_m": 1.4217421100549454,
+      "mean_pointwise_distance_vs_ref_m": 1.3220896884210933
+    }
+  ],
+  "labels": [
+    "baseline",
+    "replay_01",
+    "replay_02"
+  ]
+}
