@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react'
+import React, { useState, useEffect, useRef, useCallback, useImperativeHandle, forwardRef } from 'react'
 
 const API = '/api'
 
@@ -27,7 +27,7 @@ const makeExampleReplay = (robot) => JSON.stringify({
 // ─────────────────────────────────────────────────────────────────────────────
 // RobotPanel — painel independente por robô
 // ─────────────────────────────────────────────────────────────────────────────
-function RobotPanel({ robotId, isConnected, onViewResult, compact }) {
+const RobotPanel = forwardRef(function RobotPanel({ robotId, isConnected, onViewResult, compact }, ref) {
   const [config, setConfig]       = useState(makeExampleRecord(robotId))
   const [jobId, setJobId]         = useState(null)
   const [job, setJob]             = useState(null)
@@ -69,6 +69,8 @@ function RobotPanel({ robotId, isConnected, onViewResult, compact }) {
   }
 
   const stop = () => { if (pollRef.current) clearInterval(pollRef.current); setRunning(false) }
+
+  useImperativeHandle(ref, () => ({ run }))
 
   const lineColor = (line) => {
     if (line.includes('[OK]'))     return '#6ee7b7'
@@ -192,7 +194,7 @@ function RobotPanel({ robotId, isConnected, onViewResult, compact }) {
       )}
     </div>
   )
-}
+})
 
 // ─────────────────────────────────────────────────────────────────────────────
 // App principal
@@ -203,6 +205,8 @@ export default function App() {
   const [resetting, setResetting]   = useState(false)
   const [multiMode, setMultiMode]   = useState(false)
   const [modalResult, setModalResult] = useState(null)
+  const tb1Ref = useRef(null)
+  const tb2Ref = useRef(null)
 
   // ── Conexão ────────────────────────────────────────────────────────
   const [connPanel, setConnPanel]       = useState(false)
@@ -432,6 +436,20 @@ export default function App() {
           {multiMode ? 'Modo Multi-Robô' : 'Modo Single'}
         </button>
 
+        {/* Executar Ambos — só no modo multi */}
+        {multiMode && (
+          <button
+            disabled={!isConnected}
+            onClick={() => {
+              tb1Ref.current?.run()
+              tb2Ref.current?.run()
+            }}
+            style={btnStyle(!isConnected ? '#1a3a2a' : '#065f46', '#6ee7b7', '0.85rem', !isConnected)}
+          >
+            ▶▶ Executar Ambos
+          </button>
+        )}
+
         {/* Status de conexão */}
         {isConnected && (
           <span style={{ fontSize: '0.78rem', color: '#6ee7b7', fontFamily: 'monospace' }}>
@@ -452,6 +470,7 @@ export default function App() {
         padding: '0.75rem 1.25rem 1rem',
       }}>
         <RobotPanel
+          ref={tb1Ref}
           robotId={multiMode ? 'tb1' : 'default'}
           isConnected={isConnected}
           onViewResult={setModalResult}
@@ -459,6 +478,7 @@ export default function App() {
         />
         {multiMode && (
           <RobotPanel
+            ref={tb2Ref}
             robotId="tb2"
             isConnected={isConnected}
             onViewResult={setModalResult}
