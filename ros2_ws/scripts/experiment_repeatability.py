@@ -368,7 +368,7 @@ def _bag_sensor_summary(bag_path: Optional[str]) -> dict:
 
 
 def _bag_compute_metrics(bag_path: Optional[str]) -> dict:
-    """Lê mensagens do bag e calcula métricas: duração, percurso /odom, scan válido, IMU suavidade."""
+    """Lê mensagens do bag: duração, percurso odom, scan válido, variância IMU."""
     if not bag_path:
         return {}
     import math as _math
@@ -376,250 +376,101 @@ def _bag_compute_metrics(bag_path: Optional[str]) -> dict:
         import rosbag2_py
         from rosbag2_py import Info
         from rclpy.serialization import deserialize_message
+        from nav_msgs.msg import Odometry as _Odom
+        from sensor_msgs.msg import LaserScan as _Scan, Imu as _Imu
 
-        # duração via metadata
+        # ── Duração via metadata ──────────────────────────────────────
         duration_s: Optional[float] = None
-        for storage in ("mcap", "sqlite3"):
+        storage_id_ok = "mcap"
+        for sid in ("mcap", "sqlite3"):
             try:
-                meta = Info().read_metadata(bag_path, storage)
+                meta = Info().read_metadata(bag_path, sid)
                 if meta.duration.nanoseconds > 0:
                     duration_s = meta.duration.nanoseconds / 1e9
+                    storage_id_ok = sid
                 break
             except Exception:
                 continue
 
-        opts = rosbag2_py.ConverterOptions(
-            input_serialization_format="cdr",
-            output_serialization_format="cdr",
-        )
-
-        odom_path_pos = 0.0   # integração por pose.pose.position
-        odom_path_vel = 0.0   # integração por twist.twist.linear (fallback)
-        odom_speeds: list = []
-        prev_xy: Optional[Tuple[float, float]] = None
-        prev_t_ns: Optional[int] = None
-
-        scan_valid_counts: list = []
-
-        imu_accel_norms: list = []
-
-        for storage_id in ("mcap", "sqlite3"):
-            reader = rosbag2_py.SequentialReader()
+        # ── Lê mensagens (reader dedicado) ───────────────────────────
+        opts = rosbag2_py.ConverterOptions("cdr", "cdr")
+        reader = rosbag2_py.SequentialReader()
+        opened = False
+        for sid in (storage_id_ok, "sqlite3" if storage_id_ok == "mcap" else "mcap"):
             try:
-                reader.open(rosbag2_py.StorageOptions(uri=bag_path, storage_id=storage_id), opts)
+                reader.open(rosbag2_py.StorageOptions(uri=bag_path, storage_id=sid), opts)
+                opened = True
+                break
             except Exception:
                 continue
+        if not opened:
+            return {"duration_s": round(duration_s, 2)} if duration_s else {}
 
-            # Normaliza nomes: garante barra inicial independente da versão do rosbag2_py
-            def _norm(name: str) -> str:
-                return name if name.startswith("/") else f"/{name}"
+        odom_path = 0.0
+        prev_xy: Optional[Tuple[float, float]] = None
+        odom_n = 0
+        scan_valid: list = []
+        imu_norms: list = []
 
-            topic_types = {_norm(m.name): m.type for m in reader.get_all_topics_and_types()}
-            print(f"[TRACE] Tópicos no bag: {list(topic_types.keys())}")
+        while reader.has_next():
+            try:
+                topic, data, _ts = reader.read_next()
+            except Exception:
+                break
 
-            # Importa classes uma vez só
-            from nav_msgs.msg import Odometry as _Odom
-            from sensor_msgs.msg import LaserScan as _Scan, Imu as _Imu
-            from tf2_msgs.msg import TFMessage as _TFMsg
-            from geometry_msgs.msg import PoseWithCovarianceStamped as _PoseStamped
+            # Normaliza barra inicial
+            if not topic.startswith("/"):
+                topic = "/" + topic
 
-            odom_count = 0
-            tf_positions: list      = []  # (x, y, t_ns) via TF map→odom|base_footprint (AMCL/SLAM)
-            tf_odom_positions: list = []  # (x, y, t_ns) via TF odom→base_footprint (diff drive)
-            pose_positions: list    = []  # (x, y, t_ns) via /pose      (SLAM Toolbox)
-            amcl_positions: list    = []  # (x, y, t_ns) via /amcl_pose (AMCL — padrão recomendado)
-            while reader.has_next():
+            if topic == "/odom":
                 try:
-                    topic_raw, data, t_ns = reader.read_next()
+                    msg = deserialize_message(data, _Odom)
+                    x, y = msg.pose.pose.position.x, msg.pose.pose.position.y
+                    if prev_xy is not None:
+                        odom_path += _math.hypot(x - prev_xy[0], y - prev_xy[1])
+                    prev_xy = (x, y)
+                    odom_n += 1
                 except Exception:
-                    break
+                    pass
+            elif topic == "/scan":
+                try:
+                    msg = deserialize_message(data, _Scan)
+                    v = sum(1 for r in msg.ranges if _math.isfinite(r) and msg.range_min < r < msg.range_max)
+                    scan_valid.append(v)
+                except Exception:
+                    pass
+            elif topic == "/imu":
+                try:
+                    msg = deserialize_message(data, _Imu)
+                    a = msg.linear_acceleration
+                    imu_norms.append(_math.sqrt(a.x**2 + a.y**2 + a.z**2))
+                except Exception:
+                    pass
 
-                topic = _norm(topic_raw)
-                ttype = topic_types.get(topic, "")
-
-                if topic == "/odom" and "Odometry" in ttype:
-                    try:
-                        msg = deserialize_message(data, _Odom)
-                        x  = msg.pose.pose.position.x
-                        y  = msg.pose.pose.position.y
-                        vx = msg.twist.twist.linear.x
-                        vy = msg.twist.twist.linear.y
-
-                        if odom_count < 3 or odom_count == 100 or odom_count == 500:
-                            print(f"[TRACE] odom[{odom_count}] t_ns={t_ns} x={x:.4f} y={y:.4f} vx={vx:.4f} vy={vy:.4f}")
-
-                        if prev_t_ns is not None:
-                            dt = (t_ns - prev_t_ns) / 1e9
-                            if 0 < dt < 1.0:
-                                d_vel = _math.hypot(vx, vy) * dt
-                                odom_path_vel += d_vel
-                                if d_vel > 0:
-                                    odom_speeds.append(_math.hypot(vx, vy))
-                            elif odom_count < 5:
-                                print(f"[TRACE] odom dt={dt:.6f} fora de (0,1) — ignorado")
-
-                        if prev_xy is not None:
-                            odom_path_pos += _math.hypot(x - prev_xy[0], y - prev_xy[1])
-
-                        prev_xy = (x, y)
-                        prev_t_ns = t_ns
-                        odom_count += 1
-                    except Exception as ex:
-                        print(f"[TRACE] odom deserialize erro: {ex}")
-
-                elif topic == "/scan" and "LaserScan" in ttype:
-                    try:
-                        msg = deserialize_message(data, _Scan)
-                        valid = sum(
-                            1 for r in msg.ranges
-                            if _math.isfinite(r) and msg.range_min < r < msg.range_max
-                        )
-                        scan_valid_counts.append(valid)
-                    except Exception:
-                        pass
-
-                elif topic == "/imu" and "Imu" in ttype:
-                    try:
-                        msg = deserialize_message(data, _Imu)
-                        a = msg.linear_acceleration
-                        imu_accel_norms.append(_math.sqrt(a.x**2 + a.y**2 + a.z**2))
-                    except Exception:
-                        pass
-
-                elif topic == "/tf" and "TFMessage" in ttype:
-                    try:
-                        msg = deserialize_message(data, _TFMsg)
-                        for tr in msg.transforms:
-                            fid = tr.header.frame_id
-                            cid = tr.child_frame_id
-                            # map→odom|base_footprint: publicado pelo AMCL/SLAM (posição global)
-                            if fid == "map" and cid in ("odom", "base_footprint", "base_link"):
-                                tx = tr.transform.translation
-                                tf_positions.append((tx.x, tx.y, t_ns))
-                            # odom→base_footprint|base_link: publicado pelo diff drive (Gazebo)
-                            elif fid == "odom" and cid in ("base_footprint", "base_link"):
-                                tx = tr.transform.translation
-                                if len(tf_odom_positions) < 3 or len(tf_odom_positions) == 100:
-                                    print(f"[TRACE] tf odom→{cid}[{len(tf_odom_positions)}] x={tx.x:.4f} y={tx.y:.4f} t_ns={t_ns}")
-                                tf_odom_positions.append((tx.x, tx.y, t_ns))
-                    except Exception:
-                        pass
-
-                elif topic == "/amcl_pose" and "PoseWithCovarianceStamped" in ttype:
-                    try:
-                        msg = deserialize_message(data, _PoseStamped)
-                        x = msg.pose.pose.position.x
-                        y = msg.pose.pose.position.y
-                        amcl_positions.append((x, y, t_ns))
-                    except Exception:
-                        pass
-
-                elif topic == "/pose" and "PoseWithCovarianceStamped" in ttype:
-                    try:
-                        msg = deserialize_message(data, _PoseStamped)
-                        x = msg.pose.pose.position.x
-                        y = msg.pose.pose.position.y
-                        pose_positions.append((x, y, t_ns))
-                    except Exception:
-                        pass
-
-            odom_path_m = max(odom_path_pos, odom_path_vel)
-            print(f"[TRACE] odom msgs lidas: {odom_count}  path: {odom_path_m:.4f} m")
-
-            def _accumulate_path(positions: list, label: str) -> float:
-                """Acumula distância XY ignorando saltos > 1 m (artefactos)."""
-                path = 0.0
-                prev: Optional[tuple] = None
-                for (x, y, _) in positions:
-                    if prev is not None:
-                        d = _math.hypot(x - prev[0], y - prev[1])
-                        if d < 1.0:
-                            path += d
-                    prev = (x, y)
-                print(f"[TRACE] {label}: {len(positions)} pontos  percurso: {path:.4f} m")
-                return path
-
-            # Calcula percurso para cada fonte disponível
-            amcl_path_m     = _accumulate_path(amcl_positions,     "/amcl_pose")      if amcl_positions     else 0.0
-            pose_path_m     = _accumulate_path(pose_positions,      "/pose")           if pose_positions     else 0.0
-            tf_path_m       = _accumulate_path(tf_positions,        "TF(map→odom)")   if tf_positions       else 0.0
-            tf_odom_path_m  = _accumulate_path(tf_odom_positions,   "TF(odom→base)")  if tf_odom_positions  else 0.0
-
-            reader.close()
-            break  # leu com sucesso
+        reader.close()
+        print(f"[TRACE] bag_metrics: odom={odom_n} msgs  path={odom_path:.4f} m  scan={len(scan_valid)}  imu={len(imu_norms)}")
 
         metrics: dict = {}
         if duration_s is not None:
             metrics["duration_s"] = round(duration_s, 2)
-
-        # Prioridade de percurso:
-        #   /amcl_pose (AMCL + mapa fixo — mais estável para experimentos reprodutíveis)
-        #   > odom     (50 Hz, integração contínua — melhor para SLAM onde /pose é esparso)
-        #   > /pose    (SLAM Toolbox live — ~0.01 Hz, poucos pontos, fallback drift-corrigido)
-        #   > TF map→odom  (publicado pelo AMCL — atualiza só com movimento suficiente)
-        #   > TF odom→base (publicado pelo diff drive Gazebo — movimento incremental)
-        ref_dur = duration_s or 1
-        if amcl_path_m > 0.01:
-            metrics["amcl_path_length_m"] = round(amcl_path_m, 3)
-            metrics["amcl_avg_speed_ms"]  = round(amcl_path_m / ref_dur, 3)
-        elif odom_path_m > 0.01:
-            # Odom a 50 Hz — fonte primária para SLAM (integração contínua, sem saltos)
-            metrics["odom_path_length_m"] = round(odom_path_m, 3)
-            metrics["odom_avg_speed_ms"]  = round(odom_path_m / ref_dur, 3)
-        elif pose_path_m > 0.01:
-            metrics["pose_path_length_m"] = round(pose_path_m, 3)
-            metrics["pose_avg_speed_ms"]  = round(pose_path_m / ref_dur, 3)
-        elif tf_path_m > 0.01:
-            metrics["tf_path_length_m"] = round(tf_path_m, 3)
-            metrics["tf_avg_speed_ms"]  = round(tf_path_m / ref_dur, 3)
-        elif tf_odom_path_m > 0.01:
-            # Fallback: TF odom→base (diff drive Gazebo). Relativo ao frame odom inicial.
-            metrics["tf_path_length_m"] = round(tf_odom_path_m, 3)
-            metrics["tf_avg_speed_ms"]  = round(tf_odom_path_m / ref_dur, 3)
-        elif odom_count > 0:
-            metrics["path_unavailable"] = True  # robot no bag mas percurso indeterminável
-        if scan_valid_counts:
-            metrics["scan_avg_valid_points"] = round(sum(scan_valid_counts) / len(scan_valid_counts), 1)
-            metrics["scan_min_valid_points"] = min(scan_valid_counts)
-        if imu_accel_norms:
-            mean_a = sum(imu_accel_norms) / len(imu_accel_norms)
-            variance_a = sum((v - mean_a) ** 2 for v in imu_accel_norms) / len(imu_accel_norms)
-            metrics["imu_accel_mean_ms2"] = round(mean_a, 3)
-            metrics["imu_accel_variance_ms2"] = round(variance_a, 4)
-
-        if metrics:
-            print("\n[TRACE] Métricas do bag:")
-            labels = {
-                "duration_s":           "Duração",
-                "amcl_path_length_m":   "Percurso real (AMCL)",
-                "amcl_avg_speed_ms":    "Velocidade média (AMCL)",
-                "pose_path_length_m":   "Percurso real (SLAM /pose)",
-                "pose_avg_speed_ms":    "Velocidade média (SLAM)",
-                "tf_path_length_m":     "Percurso real (TF)",
-                "tf_avg_speed_ms":      "Velocidade média (TF)",
-                "odom_path_length_m":   "Percurso /odom (50 Hz)",
-                "odom_avg_speed_ms":    "Velocidade média (odom)",
-                "scan_avg_valid_points": "Scan pontos válidos (média)",
-                "scan_min_valid_points": "Scan pontos válidos (mín)",
-                "imu_accel_mean_ms2":   "IMU aceleração média (m/s²)",
-                "imu_accel_variance_ms2": "IMU variância aceleração",
-            }
-            units = {
-                "duration_s": "s",
-                "amcl_path_length_m": "m", "amcl_avg_speed_ms": "m/s",
-                "pose_path_length_m": "m", "pose_avg_speed_ms": "m/s",
-                "tf_path_length_m":   "m", "tf_avg_speed_ms":   "m/s",
-                "odom_path_length_m": "m", "odom_avg_speed_ms": "m/s",
-                "imu_accel_mean_ms2": "m/s²",
-            }
-            for k, v in metrics.items():
-                u = units.get(k, "")
-                print(f"  {labels.get(k, k)}: {v} {u}".rstrip())
+        if odom_path > 0.01:
+            metrics["odom_path_length_m"] = round(odom_path, 3)
+            if duration_s and duration_s > 0:
+                metrics["odom_avg_speed_ms"] = round(odom_path / duration_s, 3)
+        if scan_valid:
+            metrics["scan_avg_valid_points"] = round(sum(scan_valid) / len(scan_valid), 1)
+            metrics["scan_min_valid_points"] = min(scan_valid)
+        if imu_norms:
+            mean_a = sum(imu_norms) / len(imu_norms)
+            var_a  = sum((v - mean_a) ** 2 for v in imu_norms) / len(imu_norms)
+            metrics["imu_accel_mean_ms2"]    = round(mean_a, 3)
+            metrics["imu_accel_variance_ms2"] = round(var_a, 4)
 
         return metrics
     except Exception as e:
         print(f"[TRACE] _bag_compute_metrics erro: {e}")
         return {}
+
 
 
 def _write_export(
