@@ -75,8 +75,8 @@ def _parse_initial_pose(s: str) -> Tuple[float, float, float]:
     return bits[0], bits[1], bits[2]
 
 
-def _publish_initial_pose(node: Node, x: float, y: float, yaw: float) -> None:
-    """Publica uma vez (com reforço) em /initialpose para SLAM Toolbox / AMCL.
+def _publish_initial_pose(node: Node, x: float, y: float, yaw: float, robot_id: str = "") -> None:
+    """Publica uma vez (com reforço) em /initialpose (ou /tb1/initialpose) para SLAM/AMCL.
     Usa RELIABLE + TRANSIENT_LOCAL para compatibilidade com slam_toolbox."""
     qos = QoSProfile(
         depth=1,
@@ -84,9 +84,11 @@ def _publish_initial_pose(node: Node, x: float, y: float, yaw: float) -> None:
         durability=DurabilityPolicy.TRANSIENT_LOCAL,
         history=HistoryPolicy.KEEP_LAST,
     )
-    pub = node.create_publisher(PoseWithCovarianceStamped, "initialpose", qos)
+    topic = f"/{robot_id}/initialpose" if robot_id else "/initialpose"
+    map_frame = f"{robot_id}/map" if robot_id else "map"
+    pub = node.create_publisher(PoseWithCovarianceStamped, topic, qos)
     msg = PoseWithCovarianceStamped()
-    msg.header.frame_id = "map"
+    msg.header.frame_id = map_frame
     msg.header.stamp = node.get_clock().now().to_msg()
     msg.pose.pose.position.x = x
     msg.pose.pose.position.y = y
@@ -128,7 +130,7 @@ def _parse_points(s: str) -> List[Tuple[float, float, float]]:
 
 
 class FleetExperimentNode(Node):
-    def __init__(self, *, use_sim_time: bool = True, enable_tf: bool = True) -> None:
+    def __init__(self, *, use_sim_time: bool = True, enable_tf: bool = True, robot_id: str = "") -> None:
         super().__init__(
             "experiment_repeatability",
             parameter_overrides=[
@@ -138,9 +140,10 @@ class FleetExperimentNode(Node):
         self.last_status: Optional[FleetStatus] = None
         self.last_odom: Optional[Odometry] = None
         self.create_subscription(FleetStatus, "fleet/status", self._cb, 10)
-        # /odom em sim costuma ser BEST_EFFORT; depth 30 RELIABLE pode não receber nada.
+        # Subscreve odom com namespace correto: /tb1/odom para multi-robô, /odom para single
+        odom_topic = f"/{robot_id}/odom" if robot_id else "/odom"
         self.create_subscription(
-            Odometry, "odom", self._cb_odom, qos_profile_sensor_data
+            Odometry, odom_topic, self._cb_odom, qos_profile_sensor_data
         )
         # Replay não usa TF; omitir TransformListener reduz carga e WARNs TF_OLD_DATA no tf2.
         self.tf_buffer: Optional[Buffer] = None
@@ -227,14 +230,14 @@ class FleetExperimentNode(Node):
             rclpy.spin_once(self, timeout_sec=0.1)
         return False
 
-    def wait_map_available(self, timeout_sec: float = 30.0) -> bool:
-        """Espera até receber ao menos uma mensagem em /map (SLAM publicou mapa inicial)."""
+    def wait_map_available(self, timeout_sec: float = 30.0, map_topic: str = "/map") -> bool:
+        """Espera até receber ao menos uma mensagem em /map ou /tb1/map (SLAM publicou mapa inicial)."""
         received: list[bool] = [False]
 
         def _cb(msg: OccupancyGrid) -> None:
             received[0] = True
 
-        sub = self.create_subscription(OccupancyGrid, "/map", _cb, 1)
+        sub = self.create_subscription(OccupancyGrid, map_topic, _cb, 1)
         t0 = time.time()
         while time.time() - t0 < timeout_sec and not received[0]:
             rclpy.spin_once(self, timeout_sec=0.1)
@@ -367,8 +370,11 @@ def _bag_sensor_summary(bag_path: Optional[str]) -> dict:
     return {}
 
 
-def _bag_compute_metrics(bag_path: Optional[str]) -> dict:
-    """Lê mensagens do bag: duração, percurso odom, scan válido, variância IMU."""
+def _bag_compute_metrics(bag_path: Optional[str], robot_id: str = "") -> dict:
+    """Lê mensagens do bag: duração, percurso odom, scan válido, variância IMU.
+    robot_id vazio → tópicos /odom, /scan, /imu (single-robot).
+    robot_id 'tb1' → tópicos /tb1/odom, /tb1/scan, /tb1/imu (multi-robot).
+    """
     if not bag_path:
         return {}
     import math as _math
@@ -406,6 +412,12 @@ def _bag_compute_metrics(bag_path: Optional[str]) -> dict:
         if not opened:
             return {"duration_s": round(duration_s, 2)} if duration_s else {}
 
+        # Tópicos alvo — /tb1/odom para multi-robô, /odom para single
+        prefix = f"/{robot_id}" if robot_id else ""
+        T_ODOM = f"{prefix}/odom"
+        T_SCAN = f"{prefix}/scan"
+        T_IMU  = f"{prefix}/imu"
+
         odom_path = 0.0
         prev_xy: Optional[Tuple[float, float]] = None
         odom_n = 0
@@ -422,7 +434,7 @@ def _bag_compute_metrics(bag_path: Optional[str]) -> dict:
             if not topic.startswith("/"):
                 topic = "/" + topic
 
-            if topic == "/odom":
+            if topic == T_ODOM:
                 try:
                     msg = deserialize_message(data, _Odom)
                     x, y = msg.pose.pose.position.x, msg.pose.pose.position.y
@@ -432,14 +444,14 @@ def _bag_compute_metrics(bag_path: Optional[str]) -> dict:
                     odom_n += 1
                 except Exception:
                     pass
-            elif topic == "/scan":
+            elif topic == T_SCAN:
                 try:
                     msg = deserialize_message(data, _Scan)
                     v = sum(1 for r in msg.ranges if _math.isfinite(r) and msg.range_min < r < msg.range_max)
                     scan_valid.append(v)
                 except Exception:
                     pass
-            elif topic == "/imu":
+            elif topic == T_IMU:
                 try:
                     msg = deserialize_message(data, _Imu)
                     a = msg.linear_acceleration
@@ -498,12 +510,13 @@ def cmd_record(args: argparse.Namespace) -> int:
         return 2
 
     rclpy.init()
+    rid = args.robot
     node = FleetExperimentNode(
         use_sim_time=not args.no_use_sim_time,
         enable_tf=True,
+        robot_id=rid,
     )
     fails = 0
-    rid = args.robot
     disable_msg: Optional[str] = None
     run_error_code = ""
     path_length_m_estimate = 0.0
@@ -523,7 +536,7 @@ def cmd_record(args: argparse.Namespace) -> int:
             print(
                 f"[TRACE] Publicando /initialpose (AMCL) frame=map x={ix:.3f} y={iy:.3f} yaw={iyaw:.3f} rad ..."
             )
-            _publish_initial_pose(node, ix, iy, iyaw)
+            _publish_initial_pose(node, ix, iy, iyaw, robot_id=rid)
             print("[TRACE] Aguardando AMCL assentar (sleep 2.0s) ...")
             time.sleep(2.0)
 
@@ -589,19 +602,23 @@ def cmd_record(args: argparse.Namespace) -> int:
                 )
             return code
 
-        # Evita falhas transitórias de TF (TF_ERROR 202) antes do 1º goal.
-        print("[TRACE] Esperando TF map->base_link ...")
-        tf_ok = node.wait_tf_available("map", "base_link", timeout_sec=20.0)
-        _print(tf_ok, "TF map->base_link disponível")
+        # Frames corretos para single ou multi-robô
+        map_frame  = f"{rid}/map"       if rid else "map"
+        base_frame = f"{rid}/base_footprint" if rid else "base_footprint"
+        map_topic  = f"/{rid}/map"      if rid else "/map"
 
-        # Aguarda mapa — opcional: SLAM publica /map, AMCL usa mapa pré-carregado (sem /map).
-        # Em ambos os casos o costmap do Nav2 precisa de um breve settle antes do 1º goal.
-        print("[TRACE] Aguardando /map (SLAM) ou settle do costmap (AMCL) ...")
-        map_ok = node.wait_map_available(timeout_sec=10.0)
+        # Evita falhas transitórias de TF (TF_ERROR 202) antes do 1º goal.
+        print(f"[TRACE] Esperando TF {map_frame}->{base_frame} ...")
+        tf_ok = node.wait_tf_available(map_frame, base_frame, timeout_sec=20.0)
+        _print(tf_ok, f"TF {map_frame}->{base_frame} disponível")
+
+        # Aguarda mapa — opcional: SLAM publica /map ou /tb1/map, AMCL usa mapa pré-carregado.
+        print(f"[TRACE] Aguardando {map_topic} (SLAM) ou settle do costmap (AMCL) ...")
+        map_ok = node.wait_map_available(timeout_sec=10.0, map_topic=map_topic)
         if map_ok:
-            print("[OK] /map disponível (modo SLAM)")
+            print(f"[OK] {map_topic} disponível (modo SLAM)")
         else:
-            print("[INFO] /map não publicado — modo AMCL com mapa pré-carregado (normal)")
+            print(f"[INFO] {map_topic} não publicado — modo AMCL com mapa pré-carregado (normal)")
         # Settle do costmap: aguarda sempre, independente do modo
         print("[TRACE] Aguardando costmap processar mapa (3s) ...")
         t0_map = time.time()
@@ -756,7 +773,7 @@ def cmd_replay(args: argparse.Namespace) -> int:
             print(
                 f"[TRACE] Publicando /initialpose (AMCL) frame=map x={ix:.3f} y={iy:.3f} yaw={iyaw:.3f} rad ..."
             )
-            _publish_initial_pose(node, ix, iy, iyaw)
+            _publish_initial_pose(node, ix, iy, iyaw, robot_id=rid)
             print("[TRACE] Aguardando AMCL assentar (sleep 2.0s) ...")
             time.sleep(2.0)
 
