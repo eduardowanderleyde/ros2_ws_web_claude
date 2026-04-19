@@ -5,7 +5,7 @@
 bt_navigator:
   ros__parameters:
     global_frame: tb1/map
-    robot_base_frame: tb1/base_link
+    robot_base_frame: tb1/base_footprint
     odom_topic: /tb1/odom
     bt_loop_duration: 10
     default_server_timeout: 20
@@ -93,7 +93,7 @@ local_costmap:
       update_frequency: 5.0
       publish_frequency: 2.0
       global_frame: tb1/odom
-      robot_base_frame: tb1/base_link
+      robot_base_frame: tb1/base_footprint
       rolling_window: true
       width: 3
       height: 3
@@ -126,7 +126,7 @@ global_costmap:
       update_frequency: 1.0
       publish_frequency: 1.0
       global_frame: tb1/map
-      robot_base_frame: tb1/base_link
+      robot_base_frame: tb1/base_footprint
       transform_tolerance: 0.5
       robot_radius: 0.22
       resolution: 0.05
@@ -195,7 +195,7 @@ behavior_server:
       plugin: "nav2_behaviors::Wait"
     local_frame: tb1/odom
     global_frame: tb1/map
-    robot_base_frame: tb1/base_link
+    robot_base_frame: tb1/base_footprint
     transform_timeout: 0.1
     simulate_ahead_time: 2.0
     max_rotational_vel: 1.0
@@ -240,7 +240,7 @@ slam_toolbox:
 
     odom_frame: tb1/odom
     map_frame: tb1/map
-    base_frame: tb1/base_link
+    base_frame: tb1/base_footprint
     scan_topic: /tb1/scan
     use_map_saver: true
     mode: mapping
