@@ -11,7 +11,7 @@ const ROBOT_PROFILES = [
 const makeExampleRecord = (robot) => JSON.stringify({
   command: "record", robot,
   route: "percurso1", collect: true,
-  topics: ["scan", "odom", "imu", "pose"],
+  topics: ["scan", "odom", "imu"],
   initial_pose: [0, 0, 0],
   points: [[0.5,0,0],[1.0,0,0],[1.5,0.5,0],[2.0,0.5,0]]
 }, null, 2)
@@ -19,7 +19,7 @@ const makeExampleRecord = (robot) => JSON.stringify({
 const makeExampleReplay = (robot) => JSON.stringify({
   command: "replay", robot,
   route: "percurso1", collect: true,
-  topics: ["scan", "odom", "imu", "pose"],
+  topics: ["scan", "odom", "imu"],
   initial_pose: [0, 0, 0],
   return_to_start: [0, 0, 0]
 }, null, 2)
