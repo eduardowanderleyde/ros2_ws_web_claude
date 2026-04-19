@@ -1,0 +1,15 @@
+# Configuração do Fleet para simulação multi-robô (tb1 + tb2).
+# Usado pelo fleet_orchestrator e fleet_data_collector.
+
+fleet_orchestrator:
+  ros__parameters:
+    robots: ["tb1", "tb2"]
+    use_shared_map_frame: false   # cada robô tem seu próprio frame tb1/map, tb2/map
+    use_sim_time: true
+    routes_dir: "routes"
+
+sensor_collector:
+  ros__parameters:
+    robots: ["tb1", "tb2"]
+    collections_dir: "collections"
+    use_sim_time: true

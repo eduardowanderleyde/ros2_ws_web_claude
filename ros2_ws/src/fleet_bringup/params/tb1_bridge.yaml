@@ -1,0 +1,52 @@
+# Bridge Gazebo → ROS para o robô tb1.
+# Quando o modelo é spawned com -name tb1, o Gazebo scope os tópicos como tb1/<topic>.
+# Os ros_topic_name ficam em /tb1/<topic> no grafo ROS.
+
+# Clock (shared — só um bridge de clock por sessão; duplicar causa aviso mas não quebra)
+- ros_topic_name: "clock"
+  gz_topic_name: "clock"
+  ros_type_name: "rosgraph_msgs/msg/Clock"
+  gz_type_name: "gz.msgs.Clock"
+  direction: GZ_TO_ROS
+
+# Joint states
+- ros_topic_name: "tb1/joint_states"
+  gz_topic_name: "tb1/joint_states"
+  ros_type_name: "sensor_msgs/msg/JointState"
+  gz_type_name: "gz.msgs.Model"
+  direction: GZ_TO_ROS
+
+# Odometria (frame_id modificado no SDF: tb1/odom → tb1/base_footprint)
+- ros_topic_name: "tb1/odom"
+  gz_topic_name: "tb1/odom"
+  ros_type_name: "nav_msgs/msg/Odometry"
+  gz_type_name: "gz.msgs.Odometry"
+  direction: GZ_TO_ROS
+
+# TF do DiffDrive (tf_topic relativo no SDF → Gz publica tb1/tf)
+- ros_topic_name: "tb1/tf"
+  gz_topic_name: "tb1/tf"
+  ros_type_name: "tf2_msgs/msg/TFMessage"
+  gz_type_name: "gz.msgs.Pose_V"
+  direction: GZ_TO_ROS
+
+# Comando de velocidade (Nav2 publica em /tb1/cmd_vel via namespace)
+- ros_topic_name: "tb1/cmd_vel"
+  gz_topic_name: "tb1/cmd_vel"
+  ros_type_name: "geometry_msgs/msg/TwistStamped"
+  gz_type_name: "gz.msgs.Twist"
+  direction: ROS_TO_GZ
+
+# IMU
+- ros_topic_name: "tb1/imu"
+  gz_topic_name: "tb1/imu"
+  ros_type_name: "sensor_msgs/msg/Imu"
+  gz_type_name: "gz.msgs.IMU"
+  direction: GZ_TO_ROS
+
+# LiDAR
+- ros_topic_name: "tb1/scan"
+  gz_topic_name: "tb1/scan"
+  ros_type_name: "sensor_msgs/msg/LaserScan"
+  gz_type_name: "gz.msgs.LaserScan"
+  direction: GZ_TO_ROS

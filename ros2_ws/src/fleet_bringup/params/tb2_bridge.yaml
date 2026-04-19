@@ -1,0 +1,43 @@
+# Bridge Gazebo → ROS para o robô tb2.
+
+# Joint states
+- ros_topic_name: "tb2/joint_states"
+  gz_topic_name: "tb2/joint_states"
+  ros_type_name: "sensor_msgs/msg/JointState"
+  gz_type_name: "gz.msgs.Model"
+  direction: GZ_TO_ROS
+
+# Odometria
+- ros_topic_name: "tb2/odom"
+  gz_topic_name: "tb2/odom"
+  ros_type_name: "nav_msgs/msg/Odometry"
+  gz_type_name: "gz.msgs.Odometry"
+  direction: GZ_TO_ROS
+
+# TF do DiffDrive
+- ros_topic_name: "tb2/tf"
+  gz_topic_name: "tb2/tf"
+  ros_type_name: "tf2_msgs/msg/TFMessage"
+  gz_type_name: "gz.msgs.Pose_V"
+  direction: GZ_TO_ROS
+
+# Comando de velocidade
+- ros_topic_name: "tb2/cmd_vel"
+  gz_topic_name: "tb2/cmd_vel"
+  ros_type_name: "geometry_msgs/msg/TwistStamped"
+  gz_type_name: "gz.msgs.Twist"
+  direction: ROS_TO_GZ
+
+# IMU
+- ros_topic_name: "tb2/imu"
+  gz_topic_name: "tb2/imu"
+  ros_type_name: "sensor_msgs/msg/Imu"
+  gz_type_name: "gz.msgs.IMU"
+  direction: GZ_TO_ROS
+
+# LiDAR
+- ros_topic_name: "tb2/scan"
+  gz_topic_name: "tb2/scan"
+  ros_type_name: "sensor_msgs/msg/LaserScan"
+  gz_type_name: "gz.msgs.LaserScan"
+  direction: GZ_TO_ROS
