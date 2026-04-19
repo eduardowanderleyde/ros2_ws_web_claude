@@ -1,0 +1,73 @@
+{
+  "generated_at": "2026-04-15T01:59:25.234523+00:00",
+  "reference_run_index": 0,
+  "reference_label": "baseline",
+  "runs": [
+    {
+      "label": "baseline",
+      "bag_path": "/home/eduardo/Documentos/ros2_ws/ros2_ws/collections/default/2026-04-15_01-16-49_741882_a22a1fd2",
+      "traj_topic": "/odom",
+      "num_poses": 3192,
+      "duration_sec": 63.82000000000001,
+      "path_length_m": 2.744982328046936,
+      "start_xy": [
+        0.04086251943810912,
+        0.06925826438652753
+      ],
+      "end_xy": [
+        1.5576225583169405,
+        1.264011391366652
+      ],
+      "static_traj_warn": false
+    },
+    {
+      "label": "replay_01",
+      "bag_path": "/home/eduardo/Documentos/ros2_ws/ros2_ws/collections/default/2026-04-15_01-18-54_024702_b7913e6d",
+      "traj_topic": "/odom",
+      "num_poses": 5785,
+      "duration_sec": 115.68,
+      "path_length_m": 1.6884752553084068,
+      "start_xy": [
+        0.034298851058238745,
+        0.05045564880409798
+      ],
+      "end_xy": [
+        1.5307997831552587,
+        0.4601748922435632
+      ],
+      "static_traj_warn": false
+    }
+  ],
+  "pairwise_rmse_m": [
+    [
+      0.0,
+      0.5042896445676626
+    ],
+    [
+      0.5042896445676626,
+      0.0
+    ]
+  ],
+  "vs_reference": [
+    {
+      "label": "baseline",
+      "final_endpoint_error_m": 0.0,
+      "duration_sec": 63.82000000000001,
+      "duration_ratio_vs_ref": 1.0,
+      "rmse_vs_ref_m": 0.0,
+      "mean_pointwise_distance_vs_ref_m": 0.0
+    },
+    {
+      "label": "replay_01",
+      "final_endpoint_error_m": 0.8042838917881158,
+      "duration_sec": 115.68,
+      "duration_ratio_vs_ref": 1.812597931682858,
+      "rmse_vs_ref_m": 0.5042896445676626,
+      "mean_pointwise_distance_vs_ref_m": 0.4527865230956695
+    }
+  ],
+  "labels": [
+    "baseline",
+    "replay_01"
+  ]
+}

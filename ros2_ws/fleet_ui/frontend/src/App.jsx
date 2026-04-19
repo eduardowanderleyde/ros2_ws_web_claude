@@ -16,7 +16,7 @@ const EXAMPLE_RECORD = JSON.stringify({
   robot: "default",
   route: "percurso1",
   collect: true,
-  topics: ["scan", "odom", "imu", "amcl_pose", "tf"],
+  topics: ["scan", "odom", "imu", "pose"],
   initial_pose: [0, 0, 0],
   points: [
     [0.5, 0.0, 0.0],
@@ -31,7 +31,7 @@ const EXAMPLE_REPLAY = JSON.stringify({
   robot: "default",
   route: "percurso1",
   collect: true,
-  topics: ["scan", "odom", "imu", "amcl_pose", "tf"],
+  topics: ["scan", "odom", "imu", "pose"],
   initial_pose: [0, 0, 0],
   return_to_start: [0, 0, 0]
 }, null, 2)
@@ -519,17 +519,17 @@ export default function App() {
             </div>
           )}
           {isConnected && !nav2Ok && (
-            <div style={{ color: '#f87171', fontSize: '0.82rem', padding: '0.5rem 0.75rem', background: 'rgba(248,113,113,0.08)', borderRadius: '6px', border: '1px solid rgba(248,113,113,0.2)' }}>
-              ✗ Nav2 não está rodando — inicie o T2 antes de executar.
+            <div style={{ color: '#fbbf24', fontSize: '0.82rem', padding: '0.5rem 0.75rem', background: 'rgba(251,191,36,0.08)', borderRadius: '6px', border: '1px solid rgba(251,191,36,0.2)' }}>
+              ⚠ Nav2 parece offline — verifique o T2. O experimento falhará se Nav2 não estiver ativo.
             </div>
           )}
 
           <div style={{ display: 'flex', gap: '0.75rem' }}>
             <button
               onClick={run}
-              disabled={running || !isConnected || !nav2Ok}
-              title={!isConnected ? 'Conecte um robô primeiro' : !nav2Ok ? 'Nav2 não está rodando (inicie o T2)' : ''}
-              style={btnStyle(running || !isConnected || !nav2Ok ? '#1a3a2a' : '#065f46', '#6ee7b7', '1rem', running || !isConnected || !nav2Ok)}
+              disabled={running || !isConnected}
+              title={!isConnected ? 'Conecte um robô primeiro' : ''}
+              style={btnStyle(running || !isConnected ? '#1a3a2a' : '#065f46', '#6ee7b7', '1rem', running || !isConnected)}
             >
               {running ? '⏳ A executar…' : '▶ Executar'}
             </button>
@@ -588,7 +588,7 @@ export default function App() {
               {job.result.bag_metrics && Object.keys(job.result.bag_metrics).length > 0 && (() => {
                 const m = job.result.bag_metrics
                 const dur = m.wall_duration_s ?? m.duration_s
-                // Prioridade: AMCL > SLAM /pose > TF > odom > teórico (waypoints)
+                // Prioridade: AMCL > odom (50Hz) > SLAM /pose > TF > teórico (waypoints)
                 const amclPath = m.amcl_path_length_m
                 const posePath = m.pose_path_length_m
                 const tfPath   = m.tf_path_length_m
@@ -615,6 +615,7 @@ export default function App() {
                   m.imu_accel_mean_ms2     != null && { label: 'IMU accel média',  value: `${m.imu_accel_mean_ms2} m/s²`, color: '#c4b5fd' },
                   m.imu_accel_variance_ms2 != null && { label: 'IMU variância',    value: `${m.imu_accel_variance_ms2}`,  color: '#c4b5fd' },
                 ].filter(Boolean)
+                const pathUnavailable = m.path_unavailable === true && realPath == null
                 return (
                   <div style={{ background: '#161a22', border: '1px solid #2a3142', borderRadius: '8px', padding: '0.75rem 1rem' }}>
                     <div style={{ fontSize: '0.75rem', color: '#8b92a8', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.6rem' }}>
@@ -628,6 +629,11 @@ export default function App() {
                         </div>
                       ))}
                     </div>
+                    {pathUnavailable && (
+                      <div style={{ marginTop: '0.6rem', fontSize: '0.75rem', color: '#fbbf24', background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.2)', borderRadius: '6px', padding: '0.4rem 0.6rem' }}>
+                        ⚠ Percurso indisponível — adicione <code style={{ fontFamily: 'monospace', background: 'rgba(255,255,255,0.08)', padding: '0 0.25rem', borderRadius: '3px' }}>"pose"</code> nos topics para medir deslocamento real.
+                      </div>
+                    )}
                   </div>
                 )
               })()}
