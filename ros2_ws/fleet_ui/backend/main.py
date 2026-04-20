@@ -4,78 +4,87 @@ Rode com o workspace sourceado: source install/setup.bash && python main.py
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import math
 import os
+import shlex
 import struct
 import subprocess
 import threading
+import uuid
 import zlib
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-import asyncio
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-# Caminho do workspace (para ros2 service call). Use FLEET_WS ou sobe 2 níveis a partir de backend/
 WORKSPACE = os.environ.get("FLEET_WS") or str(Path(__file__).resolve().parent.parent.parent)
 
-# Status da frota (atualizado pelo subscriber ROS em thread)
-_fleet_status: dict = {"robots": []}
-_robot_pose: dict = {"x": 0.0, "y": 0.0, "yaw": 0.0, "valid": False}
-_map_meta: dict = {}  # resolution, origin_x, origin_y, width, height, png_b64
+# ── Estado global (actualizado pelo thread ROS) ───────────────────────────────
+_fleet_status: dict = {"robots": [], "nav2_ready": False}
+_robot_poses: dict = {}   # robot_id → {"x", "y", "yaw", "valid"}
+_map_meta: dict = {}
 _status_lock = threading.Lock()
 _ws_clients: list[WebSocket] = []
 
 
-def _ros_env():
-    return {
-        **os.environ,
-        "ROS_DOMAIN_ID": os.environ.get("ROS_DOMAIN_ID", "0"),
-    }
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _ros_env() -> dict:
+    return {**os.environ, "ROS_DOMAIN_ID": os.environ.get("ROS_DOMAIN_ID", "0")}
 
 
-def _run_ros2_service(srv: str, srv_type: str, request_json: str, timeout: int = 10) -> tuple[bool, str]:
-    cmd = f"source /opt/ros/jazzy/setup.bash 2>/dev/null; source {WORKSPACE}/install/setup.bash 2>/dev/null; ros2 service call {srv} {srv_type} '{request_json}'"
+def _ros_setup_prefix() -> str:
+    return (
+        f"source /opt/ros/jazzy/setup.bash 2>/dev/null; "
+        f"source {WORKSPACE}/install/setup.bash 2>/dev/null; "
+    )
+
+
+# P0-FIX-1: service calls async — não bloqueia o event loop
+async def _call_service(srv: str, srv_type: str, request_json: str, timeout: int = 10) -> tuple[bool, str]:
+    """Chama ros2 service call de forma assíncrona (não bloqueia outros requests)."""
+    cmd = f"{_ros_setup_prefix()}ros2 service call {srv} {srv_type} '{request_json}'"
     try:
-        r = subprocess.run(
-            ["bash", "-c", cmd],
+        proc = await asyncio.create_subprocess_exec(
+            "bash", "-c", cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
             env=_ros_env(),
-            capture_output=True,
-            text=True,
-            timeout=timeout,
             cwd=WORKSPACE,
         )
-        out = (r.stdout or "").strip() + (r.stderr or "").strip()
-        if r.returncode != 0:
-            return False, out or "ros2 service call failed"
-        return True, out
-    except subprocess.TimeoutExpired:
-        return False, "timeout"
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.communicate()
+            return False, "timeout"
+        out = (stdout.decode() if stdout else "").strip()
+        err = (stderr.decode() if stderr else "").strip()
+        combined = out + err
+        if proc.returncode != 0:
+            return False, combined or "ros2 service call failed"
+        return True, combined
     except Exception as e:
         return False, str(e)
 
 
 def _encode_map_png(data: list, width: int, height: int) -> bytes:
-    """Codifica OccupancyGrid como PNG grayscale (Y flipado para canvas)."""
     pixels = []
     for v in data:
-        if v < 0:
-            pixels.append(180)   # desconhecido: cinza
-        elif v == 0:
-            pixels.append(240)   # livre: branco
-        else:
-            pixels.append(30)    # ocupado: quase preto
+        if v < 0:   pixels.append(180)
+        elif v == 0: pixels.append(240)
+        else:        pixels.append(30)
 
     def make_row(row_idx: int) -> bytes:
-        row = bytearray([0])  # filter type None
+        row = bytearray([0])
         row.extend(pixels[row_idx * width:(row_idx + 1) * width])
         return bytes(row)
 
-    # Flipa Y: row 0 do PNG = maior y do mundo
     raw = b''.join(make_row(height - 1 - y) for y in range(height))
     compressed = zlib.compress(raw, 6)
 
@@ -90,21 +99,24 @@ def _encode_map_png(data: list, width: int, height: int) -> bytes:
     return png
 
 
+# ── Thread ROS (subscriber + TF) ─────────────────────────────────────────────
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     def run_ros():
         try:
             import rclpy
             from rclpy.node import Node
+            from rclpy.time import Time as RclpyTime
             from fleet_msgs.msg import FleetStatus
             from geometry_msgs.msg import PoseWithCovarianceStamped
             from nav_msgs.msg import OccupancyGrid
+            import tf2_ros
 
             rclpy.init()
-            node = Node("fleet_ui_bridge", parameter_overrides=[
-                rclpy.parameter.Parameter("use_sim_time", rclpy.parameter.Parameter.Type.BOOL, True)
-            ])
+            node = Node("fleet_ui_bridge")
 
+            # fleet/status ─────────────────────────────────────────────────────
             def fleet_cb(msg):
                 with _status_lock:
                     _fleet_status["robots"] = [
@@ -121,38 +133,53 @@ async def lifespan(app: FastAPI):
                         for r in msg.robots
                     ]
 
-            def amcl_cb(msg):
-                p = msg.pose.pose.position
-                q = msg.pose.pose.orientation
-                yaw = math.atan2(
-                    2.0 * (q.w * q.z + q.x * q.y),
-                    1.0 - 2.0 * (q.y * q.y + q.z * q.z),
-                )
-                with _status_lock:
-                    _robot_pose.update({"x": p.x, "y": p.y, "yaw": yaw, "valid": True})
-
-            # TF lookup: map → base_footprint (usado com SLAM Toolbox)
-            import tf2_ros
-            from rclpy.time import Time as RclpyTime
-            tf_buffer = tf2_ros.Buffer()
-            tf2_ros.TransformListener(tf_buffer, node)
-
-            def tf_timer_cb():
-                try:
-                    t = tf_buffer.lookup_transform("map", "base_footprint", RclpyTime())
-                    tr = t.transform.translation
-                    q = t.transform.rotation
+            # pose topics (single-robot: /pose e /amcl_pose → robot_id "")
+            def _pose_cb(robot_id: str):
+                def _cb(msg):
+                    p = msg.pose.pose.position
+                    q = msg.pose.pose.orientation
                     yaw = math.atan2(
                         2.0 * (q.w * q.z + q.x * q.y),
                         1.0 - 2.0 * (q.y * q.y + q.z * q.z),
                     )
                     with _status_lock:
-                        _robot_pose.update({"x": tr.x, "y": tr.y, "yaw": yaw, "valid": True})
-                except Exception:
-                    pass
+                        _robot_poses[robot_id] = {"x": p.x, "y": p.y, "yaw": yaw, "valid": True}
+                return _cb
+
+            # P0-FIX-3: TF lookup por robot_id ────────────────────────────────
+            tf_buffer = tf2_ros.Buffer()
+            tf2_ros.TransformListener(tf_buffer, node)
+
+            def tf_timer_cb():
+                with _status_lock:
+                    robots = [r["robot_id"] for r in _fleet_status.get("robots", [])]
+                if not robots:
+                    robots = [""]  # fallback single-robot
+
+                for rid in robots:
+                    # frames: single-robot → map/base_footprint
+                    #         multi-robot  → tb1/map / tb1/base_footprint
+                    map_frame  = "map"           if rid == "" else f"{rid}/map"
+                    base_frame = "base_footprint" if rid == "" else f"{rid}/base_footprint"
+                    try:
+                        t = tf_buffer.lookup_transform(map_frame, base_frame, RclpyTime())
+                        tr = t.transform.translation
+                        q  = t.transform.rotation
+                        yaw = math.atan2(
+                            2.0 * (q.w * q.z + q.x * q.y),
+                            1.0 - 2.0 * (q.y * q.y + q.z * q.z),
+                        )
+                        with _status_lock:
+                            _robot_poses[rid] = {"x": tr.x, "y": tr.y, "yaw": yaw, "valid": True}
+                    except Exception:
+                        # marca como inválido se TF sumir
+                        with _status_lock:
+                            if rid in _robot_poses:
+                                _robot_poses[rid]["valid"] = False
 
             node.create_timer(0.1, tf_timer_cb)
 
+            # mapa ─────────────────────────────────────────────────────────────
             def map_cb(msg):
                 info = msg.info
                 if info.width == 0 or info.height == 0:
@@ -170,15 +197,14 @@ async def lifespan(app: FastAPI):
                             "png_b64": b64,
                         })
                 except Exception as e:
-                    node.get_logger().warning(f"map_cb error: {e}")
+                    node.get_logger().warning(f"map_cb: {e}")
 
-            # Verifica Nav2 periodicamente via ros2 action list (mais confiável que ActionClient)
+            # Nav2 check ───────────────────────────────────────────────────────
             def nav2_check_cb():
                 try:
-                    env = {**os.environ}
                     r = subprocess.run(
-                        ["bash", "-c", "source /opt/ros/jazzy/setup.bash 2>/dev/null; ros2 action list 2>/dev/null"],
-                        capture_output=True, text=True, timeout=3, env=env,
+                        ["bash", "-c", f"{_ros_setup_prefix()}ros2 action list 2>/dev/null"],
+                        capture_output=True, text=True, timeout=3, env=_ros_env(),
                     )
                     ready = "/navigate_to_pose" in r.stdout
                 except Exception:
@@ -189,17 +215,17 @@ async def lifespan(app: FastAPI):
             node.create_timer(3.0, nav2_check_cb)
 
             node.create_subscription(FleetStatus, "fleet/status", fleet_cb, 10)
-            node.create_subscription(PoseWithCovarianceStamped, "amcl_pose", amcl_cb, 10)
-            node.create_subscription(PoseWithCovarianceStamped, "pose", amcl_cb, 10)
+            node.create_subscription(PoseWithCovarianceStamped, "amcl_pose", _pose_cb(""), 10)
+            node.create_subscription(PoseWithCovarianceStamped, "pose", _pose_cb(""), 10)
             node.create_subscription(OccupancyGrid, "map", map_cb, 1)
+
             rclpy.spin(node)
             node.destroy_node()
             rclpy.shutdown()
         except Exception as e:
-            print(f"[fleet_ui] ROS subscriber not started (source workspace?): {e}")
+            print(f"[fleet_ui] ROS thread erro: {e}")
 
-    t = threading.Thread(target=run_ros, daemon=True)
-    t.start()
+    threading.Thread(target=run_ros, daemon=True).start()
     yield
 
 
@@ -207,10 +233,26 @@ app = FastAPI(title="Fleet UI API", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 
+# ── Status ────────────────────────────────────────────────────────────────────
+
+def _status_payload() -> dict:
+    """Monta payload de status: inclui poses por robot_id + pose de compat (single-robot)."""
+    with _status_lock:
+        fs = dict(_fleet_status)
+        poses = dict(_robot_poses)
+
+    # P0-FIX-2: retorna poses por robot_id
+    # "pose" mantém compat com frontend single-robot (robot_id="" ou primeiro da lista)
+    robots = fs.get("robots", [])
+    default_rid = robots[0]["robot_id"] if robots else ""
+    compat_pose = poses.get(default_rid, poses.get("", {"x": 0.0, "y": 0.0, "yaw": 0.0, "valid": False}))
+
+    return {**fs, "poses": poses, "pose": compat_pose}
+
+
 @app.get("/api/status")
 async def get_status():
-    with _status_lock:
-        return {**_fleet_status, "pose": _robot_pose}
+    return _status_payload()
 
 
 @app.websocket("/ws/status")
@@ -218,14 +260,10 @@ async def websocket_status(websocket: WebSocket):
     await websocket.accept()
     _ws_clients.append(websocket)
     try:
-        with _status_lock:
-            payload = {**_fleet_status, "pose": _robot_pose}
-        await websocket.send_text(json.dumps(payload))
+        await websocket.send_text(json.dumps(_status_payload()))
         while True:
             await asyncio.sleep(0.25)
-            with _status_lock:
-                payload = {**_fleet_status, "pose": _robot_pose}
-            await websocket.send_text(json.dumps(payload))
+            await websocket.send_text(json.dumps(_status_payload()))
     except WebSocketDisconnect:
         pass
     finally:
@@ -233,20 +271,18 @@ async def websocket_status(websocket: WebSocket):
             _ws_clients.remove(websocket)
 
 
-import uuid
-import shlex
+# ── Jobs (experiment_repeatability.py subprocess) ────────────────────────────
 
-_jobs: dict = {}   # job_id → {running, lines, result, error}
+_jobs: dict = {}
 
 
 def _build_cmd(cfg: dict) -> list[str]:
-    cmd = cfg.get("command", "record")
+    cmd   = cfg.get("command", "record")
     robot = cfg.get("robot", "")
-    # "default" é o robot único em single_robot_sim → usa --single-robot (robot_id="")
     single = not robot or robot == "default"
-    route = cfg.get("route", "percurso1")
+    route  = cfg.get("route", "percurso1")
     collect = cfg.get("collect", True)
-    topics = cfg.get("topics", ["scan", "odom", "imu", "pose"])
+    topics  = cfg.get("topics", ["scan", "odom", "imu"])
     ip = cfg.get("initial_pose")
     args = [
         "python3", str(Path(WORKSPACE) / "scripts" / "experiment_repeatability.py"),
@@ -265,12 +301,11 @@ def _build_cmd(cfg: dict) -> list[str]:
     if cmd == "record":
         pts = cfg.get("points", [])
         if pts:
-            args += ["--points", ";".join(f"{p[0]},{p[1]},{p[2] if len(p)>2 else 0}" for p in pts)]
+            args += ["--points", ";".join(f"{p[0]},{p[1]},{p[2] if len(p) > 2 else 0}" for p in pts)]
     elif cmd == "replay":
         rts = cfg.get("return_to_start")
         if rts:
             args += ["--return-to-start", f"{rts[0]},{rts[1]},{rts[2]}"]
-    # export result to temp file
     return args
 
 
@@ -279,8 +314,7 @@ async def run_config(cfg: dict):
     job_id = str(uuid.uuid4())[:8]
     export_path = str(Path(WORKSPACE) / f"_job_{job_id}.json")
     try:
-        cmd = _build_cmd(cfg)
-        cmd += ["--export", export_path]
+        cmd = _build_cmd(cfg) + ["--export", export_path]
     except Exception as e:
         return JSONResponse({"success": False, "message": str(e)}, status_code=400)
 
@@ -288,8 +322,7 @@ async def run_config(cfg: dict):
 
     def _run():
         env = {**_ros_env(), "PYTHONUNBUFFERED": "1"}
-        ros_setup = f"source /opt/ros/jazzy/setup.bash 2>/dev/null; source {WORKSPACE}/install/setup.bash 2>/dev/null; "
-        shell_cmd = ros_setup + " ".join(shlex.quote(c) for c in cmd)
+        shell_cmd = _ros_setup_prefix() + " ".join(shlex.quote(c) for c in cmd)
         try:
             proc = subprocess.Popen(
                 ["bash", "-c", shell_cmd],
@@ -304,11 +337,9 @@ async def run_config(cfg: dict):
                 _jobs[job_id]["lines"].append(l)
             proc.wait()
             _jobs[job_id]["exit_code"] = proc.returncode
-            # load export json
             ep = Path(export_path)
             if ep.exists():
-                import json as _json
-                _jobs[job_id]["result"] = _json.loads(ep.read_text())
+                _jobs[job_id]["result"] = json.loads(ep.read_text())
                 ep.unlink(missing_ok=True)
         except Exception as ex:
             _jobs[job_id]["error"] = str(ex)
@@ -324,26 +355,116 @@ async def get_job(job_id: str):
     job = _jobs.get(job_id)
     if not job:
         return JSONResponse({"error": "job not found"}, status_code=404)
-    return {
-        "running": job["running"],
-        "lines": job["lines"],
-        "result": job["result"],
-        "error": job["error"],
-        "exit_code": job["exit_code"],
-    }
+    return {k: job[k] for k in ("running", "lines", "result", "error", "exit_code")}
 
+
+# ── Fleet services (agora todos async — sem bloqueio do event loop) ───────────
+
+@app.post("/api/go_to_point")
+async def go_to_point(robot_id: str = "", x: float = 0.0, y: float = 0.0, yaw: float = 0.0):
+    ok, out = await _call_service(
+        "go_to_point", "fleet_msgs/srv/GoToPoint",
+        json.dumps({"robot_id": robot_id or "", "x": x, "y": y, "yaw": yaw}),
+    )
+    return {"success": ok, "message": out}
+
+
+@app.post("/api/start_record")
+async def start_record(robot_id: str = "", route_name: str = "r1"):
+    ok, out = await _call_service(
+        "start_record", "fleet_msgs/srv/StartRecord",
+        json.dumps({"robot_id": robot_id or "", "route_name": route_name}),
+    )
+    return {"success": ok, "message": out}
+
+
+@app.post("/api/stop_record")
+async def stop_record(robot_id: str = ""):
+    ok, out = await _call_service(
+        "stop_record", "fleet_msgs/srv/StopRecord",
+        json.dumps({"robot_id": robot_id or ""}),
+    )
+    return {"success": ok, "message": out}
+
+
+@app.post("/api/play_route")
+async def play_route(robot_id: str = "", route_name: str = "r1"):
+    ok, out = await _call_service(
+        "play_route", "fleet_msgs/srv/PlayRoute",
+        json.dumps({"robot_id": robot_id or "", "route_name": route_name}),
+    )
+    return {"success": ok, "message": out}
+
+
+@app.post("/api/cancel")
+async def cancel(robot_id: str = ""):
+    ok, out = await _call_service(
+        "cancel", "fleet_msgs/srv/Cancel",
+        json.dumps({"robot_id": robot_id or ""}),
+    )
+    return {"success": ok, "message": out}
+
+
+@app.post("/api/enable_collection")
+async def enable_collection(robot_id: str = "", topics: str = "scan,odom", output_mode: str = "rosbag2"):
+    topic_list = [t.strip() for t in topics.split(",") if t.strip()] or ["scan", "odom"]
+    ok, out = await _call_service(
+        "enable_collection", "fleet_msgs/srv/EnableCollection",
+        json.dumps({"robot_id": robot_id or "", "topics": topic_list, "output_mode": output_mode}),
+    )
+    return {"success": ok, "message": out}
+
+
+@app.post("/api/disable_collection")
+async def disable_collection(robot_id: str = ""):
+    ok, out = await _call_service(
+        "disable_collection", "fleet_msgs/srv/DisableCollection",
+        json.dumps({"robot_id": robot_id or ""}),
+    )
+    return {"success": ok, "message": out}
+
+
+@app.get("/api/list_robots")
+async def list_robots():
+    ok, out = await _call_service("list_robots", "fleet_msgs/srv/ListRobots", "{}")
+    if not ok:
+        return {"robot_ids": []}
+    try:
+        import yaml
+        data = yaml.safe_load(out) if out else {}
+        return {"robot_ids": data.get("robot_ids", []) or []}
+    except Exception:
+        return {"robot_ids": []}
+
+
+@app.get("/api/list_routes")
+async def list_routes(robot_id: str = ""):
+    ok, out = await _call_service(
+        "list_routes", "fleet_msgs/srv/ListRoutes",
+        json.dumps({"robot_id": robot_id or ""}),
+    )
+    if not ok:
+        return {"route_names": []}
+    try:
+        import yaml
+        data = yaml.safe_load(out) if out else {}
+        return {"route_names": data.get("route_names", []) or []}
+    except Exception:
+        return {"route_names": []}
+
+
+# ── Utilitários ───────────────────────────────────────────────────────────────
 
 @app.post("/api/save_route_waypoints")
 async def save_route_waypoints(body: dict):
-    """Salva lista de waypoints diretamente como yaml (sem precisar do record flow)."""
     import yaml
-    robot_id = body.get("robot_id", "") or ""
+    robot_id   = body.get("robot_id", "") or ""
     route_name = (body.get("route_name") or "").strip()
-    waypoints = body.get("waypoints", [])
+    waypoints  = body.get("waypoints", [])
     if not route_name:
-        return JSONResponse(content={"success": False, "message": "route_name vazio"}, status_code=400)
+        return JSONResponse({"success": False, "message": "route_name vazio"}, status_code=400)
     if not waypoints:
-        return JSONResponse(content={"success": False, "message": "waypoints vazio"}, status_code=400)
+        return JSONResponse({"success": False, "message": "waypoints vazio"}, status_code=400)
     folder = "default" if not robot_id else robot_id
     routes_dir = Path(WORKSPACE) / "routes" / folder
     routes_dir.mkdir(parents=True, exist_ok=True)
@@ -361,124 +482,17 @@ async def save_route_waypoints(body: dict):
 async def get_map():
     with _status_lock:
         if not _map_meta:
-            return JSONResponse(content={"available": False})
+            return JSONResponse({"available": False})
         return {"available": True, **_map_meta}
 
 
-@app.post("/api/start_record")
-async def start_record(robot_id: str = "", route_name: str = "r1"):
-    robot_id = robot_id or ""
-    ok, out = _run_ros2_service(
-        "start_record", "fleet_msgs/srv/StartRecord",
-        json.dumps({"robot_id": robot_id, "route_name": route_name}),
-    )
-    return {"success": ok, "message": out}
-
-
-@app.post("/api/stop_record")
-async def stop_record(robot_id: str = ""):
-    robot_id = robot_id or ""
-    ok, out = _run_ros2_service(
-        "stop_record", "fleet_msgs/srv/StopRecord",
-        json.dumps({"robot_id": robot_id}),
-    )
-    return {"success": ok, "message": out}
-
-
-@app.post("/api/play_route")
-async def play_route(robot_id: str = "", route_name: str = "r1"):
-    robot_id = robot_id or ""
-    ok, out = _run_ros2_service(
-        "play_route", "fleet_msgs/srv/PlayRoute",
-        json.dumps({"robot_id": robot_id, "route_name": route_name}),
-    )
-    return {"success": ok, "message": out}
-
-
-@app.post("/api/go_to_point")
-async def go_to_point(robot_id: str = "", x: float = 0.0, y: float = 0.0, yaw: float = 0.0):
-    robot_id = robot_id or ""
-    ok, out = _run_ros2_service(
-        "go_to_point", "fleet_msgs/srv/GoToPoint",
-        json.dumps({"robot_id": robot_id, "x": x, "y": y, "yaw": yaw}),
-    )
-    return {"success": ok, "message": out}
-
-
-@app.post("/api/cancel")
-async def cancel(robot_id: str = ""):
-    robot_id = robot_id or ""
-    ok, out = _run_ros2_service(
-        "cancel", "fleet_msgs/srv/Cancel",
-        json.dumps({"robot_id": robot_id}),
-    )
-    return {"success": ok, "message": out}
-
-
-@app.get("/api/list_robots")
-async def list_robots():
-    ok, out = _run_ros2_service("list_robots", "fleet_msgs/srv/ListRobots", "{}")
-    if not ok:
-        return JSONResponse(content={"robot_ids": []}, status_code=200)
-    try:
-        import yaml
-        data = yaml.safe_load(out) if out else {}
-        robot_ids = data.get("robot_ids", []) or []
-        return {"robot_ids": robot_ids}
-    except Exception:
-        return {"robot_ids": []}
-
-
-@app.get("/api/list_routes")
-async def list_routes(robot_id: str = ""):
-    robot_id = robot_id or ""
-    ok, out = _run_ros2_service(
-        "list_routes", "fleet_msgs/srv/ListRoutes",
-        json.dumps({"robot_id": robot_id}),
-    )
-    if not ok:
-        return {"route_names": []}
-    try:
-        import yaml
-        data = yaml.safe_load(out) if out else {}
-        return {"route_names": data.get("route_names", []) or []}
-    except Exception:
-        return {"route_names": []}
-
-
-@app.post("/api/enable_collection")
-async def enable_collection(robot_id: str = "", topics: str = "scan,odom", output_mode: str = "rosbag2"):
-    robot_id = robot_id or ""
-    topic_list = [t.strip() for t in topics.split(",") if t.strip()] or ["scan", "odom"]
-    ok, out = _run_ros2_service(
-        "enable_collection", "fleet_msgs/srv/EnableCollection",
-        json.dumps({"robot_id": robot_id, "topics": topic_list, "output_mode": output_mode}),
-    )
-    return {"success": ok, "message": out}
-
-
-@app.post("/api/disable_collection")
-async def disable_collection(robot_id: str = ""):
-    robot_id = robot_id or ""
-    ok, out = _run_ros2_service(
-        "disable_collection", "fleet_msgs/srv/DisableCollection",
-        json.dumps({"robot_id": robot_id}),
-    )
-    return {"success": ok, "message": out}
-
+# ── Descoberta de robôs ───────────────────────────────────────────────────────
 
 @app.get("/api/discover_robots")
 async def discover_robots(subnet: str = ""):
-    """
-    Varre a subnet por hosts com porta 22 aberta e testa se têm ROS 2.
-    subnet ex: '192.168.1' (varre .1–.254).
-    Se omitido, detecta automaticamente a subnet local.
-    """
-    import ipaddress
     import socket
     import concurrent.futures
 
-    # Detecta subnet local se não informada
     if not subnet:
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -488,78 +502,75 @@ async def discover_robots(subnet: str = ""):
             subnet = ".".join(local_ip.split(".")[:3])
             print(f"[discover] IP local: {local_ip}  subnet: {subnet}")
         except Exception as e:
-            print(f"[discover] falhou auto-detecção: {e}")
-            return {"found": [], "subnet_scanned": "", "error": "Não foi possível detectar subnet local. Informe manualmente (ex: 192.168.1)"}
+            print(f"[discover] auto-detecção falhou: {e}")
+            return {"found": [], "subnet_scanned": "", "error": "Não foi possível detectar subnet. Informe manualmente (ex: 192.168.1)"}
 
     subnet = subnet.strip()
-
-    # Valida formato
-    try:
-        parts = subnet.split(".")
-        if len(parts) != 3 or not all(p.isdigit() and 0 <= int(p) <= 255 for p in parts):
-            return {"found": [], "subnet_scanned": subnet, "error": f"Subnet inválida: {subnet}. Use formato X.X.X (ex: 192.168.1)"}
-    except Exception:
-        return {"found": [], "subnet_scanned": subnet, "error": f"Subnet inválida: {subnet}"}
+    parts = subnet.split(".")
+    if len(parts) != 3 or not all(p.isdigit() and 0 <= int(p) <= 255 for p in parts):
+        return {"found": [], "subnet_scanned": subnet, "error": f"Subnet inválida: {subnet}. Use X.X.X (ex: 192.168.1)"}
 
     targets = [f"{subnet}.{i}" for i in range(1, 255)]
 
-    def _check(ip: str) -> dict | None:
+    def _check(ip: str):
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(0.3)
-            result = sock.connect_ex((ip, 22))
-            sock.close()
-            if result != 0:
+            if sock.connect_ex((ip, 22)) != 0:
+                sock.close()
                 return None
-            # Tenta resolver hostname
+            sock.close()
             try:
                 hostname = socket.gethostbyaddr(ip)[0]
             except Exception:
                 hostname = ip
-            # Heurística: robotics hostnames
             is_robot = any(kw in hostname.lower() for kw in ("tb", "turtle", "robot", "pi", "nano", "jetson", "ros"))
             return {"ip": ip, "hostname": hostname, "ssh": True, "likely_robot": is_robot}
         except Exception:
             return None
 
-    found = []
+    loop = asyncio.get_event_loop()
     with concurrent.futures.ThreadPoolExecutor(max_workers=60) as ex:
-        for res in ex.map(_check, targets):
-            if res:
-                found.append(res)
+        results = await loop.run_in_executor(None, lambda: list(ex.map(_check, targets)))
 
-    found.sort(key=lambda x: (not x["likely_robot"], x["ip"]))
+    found = sorted([r for r in results if r], key=lambda x: (not x["likely_robot"], x["ip"]))
     return {"found": found, "subnet_scanned": subnet}
 
 
 @app.post("/api/test_ssh")
 async def test_ssh(body: dict):
-    """Testa SSH num host: verifica conexão e presença do ROS 2."""
     host = (body.get("host") or "").strip()
     user = (body.get("user") or "ubuntu").strip()
     port = int(body.get("port") or 22)
     if not host:
         return JSONResponse({"success": False, "message": "host vazio"}, status_code=400)
+    cmd = (
+        f"ssh -o ConnectTimeout=4 -o StrictHostKeyChecking=no -o BatchMode=yes "
+        f"-p {port} {user}@{host} "
+        f"'which ros2 && ros2 --version 2>/dev/null || echo NO_ROS2'"
+    )
     try:
-        cmd = (
-            f"ssh -o ConnectTimeout=4 -o StrictHostKeyChecking=no -o BatchMode=yes "
-            f"-p {port} {user}@{host} "
-            f"'which ros2 && ros2 --version 2>/dev/null || echo NO_ROS2'"
+        proc = await asyncio.create_subprocess_exec(
+            "bash", "-c", cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
-        r = subprocess.run(["bash", "-c", cmd], capture_output=True, text=True, timeout=8)
-        out = (r.stdout or "").strip()
-        err = (r.stderr or "").strip()
-        if r.returncode != 0:
-            return {"success": False, "message": err or f"SSH falhou (exit {r.returncode})"}
-        has_ros = "NO_ROS2" not in out and out
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=8)
+        except asyncio.TimeoutError:
+            proc.kill()
+            return {"success": False, "message": "Timeout SSH"}
+        out = (stdout.decode() if stdout else "").strip()
+        err = (stderr.decode() if stderr else "").strip()
+        if proc.returncode != 0:
+            return {"success": False, "message": err or f"SSH falhou (exit {proc.returncode})"}
+        has_ros = "NO_ROS2" not in out and bool(out)
         return {
             "success": True,
             "has_ros2": has_ros,
             "ros2_version": out if has_ros else None,
             "message": f"ROS 2 encontrado: {out}" if has_ros else "SSH OK mas ROS 2 não encontrado",
         }
-    except subprocess.TimeoutExpired:
-        return {"success": False, "message": "Timeout ao conectar via SSH"}
     except Exception as e:
         return {"success": False, "message": str(e)}
 

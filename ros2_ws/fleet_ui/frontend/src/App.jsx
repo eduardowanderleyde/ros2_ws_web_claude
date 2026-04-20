@@ -200,7 +200,7 @@ const RobotPanel = forwardRef(function RobotPanel({ robotId, isConnected, onView
 // App principal
 // ─────────────────────────────────────────────────────────────────────────────
 export default function App() {
-  const [status, setStatus]         = useState({ robots: [], pose: { x: 0, y: 0, yaw: 0, valid: false } })
+  const [status, setStatus]         = useState({ robots: [], poses: {}, pose: { x: 0, y: 0, yaw: 0, valid: false } })
   const [resetMsg, setResetMsg]     = useState(null)
   const [resetting, setResetting]   = useState(false)
   const [multiMode, setMultiMode]   = useState(false)
@@ -293,8 +293,19 @@ export default function App() {
     finally { setResetting(false); setTimeout(() => setResetMsg(null), 3000) }
   }
 
-  const pose  = status.pose || {}
-  const robot = status.robots?.[0] || {}
+  // ── Seleção de robô activo ────────────────────────────────────────
+  const [activeRobotId, setActiveRobotId] = useState('')
+
+  const allRobots = status.robots || []
+  // sincroniza activeRobotId com o primeiro robô disponível
+  useEffect(() => {
+    if (allRobots.length && !allRobots.find(r => r.robot_id === activeRobotId)) {
+      setActiveRobotId(allRobots[0].robot_id)
+    }
+  }, [allRobots.length])
+
+  const robot = allRobots.find(r => r.robot_id === activeRobotId) || allRobots[0] || {}
+  const pose  = (status.poses || {})[robot.robot_id ?? ''] || status.pose || {}
   const deg   = r => (r * 180 / Math.PI).toFixed(1)
   const connLight = { idle: '#4b5563', connecting: '#fbbf24', connected: '#6ee7b7', error: '#f87171' }[connStatus]
   const isConnected = connStatus === 'connected'
@@ -460,6 +471,45 @@ export default function App() {
           <span style={{ fontSize: '0.78rem', color: '#f87171', fontFamily: 'monospace' }}>✗ {connMsg}</span>
         )}
       </div>
+
+      {/* ── Tabela de frota (só aparece com 2+ robôs) ── */}
+      {allRobots.length > 1 && (
+        <div style={{ padding: '0.25rem 1.25rem', borderBottom: '1px solid #2a3142', flexShrink: 0, overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.73rem', fontFamily: 'JetBrains Mono, monospace' }}>
+            <thead>
+              <tr>
+                {['Robô', 'Nav', 'Rota', 'Coleta', 'x', 'y', 'yaw'].map(h => (
+                  <th key={h} style={{ textAlign: 'left', color: '#4b5563', fontWeight: 500, padding: '0.2rem 0.6rem 0.2rem 0', borderBottom: '1px solid #1e2535' }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {allRobots.map(r => {
+                const p = (status.poses || {})[r.robot_id] || {}
+                const isActive = r.robot_id === activeRobotId
+                return (
+                  <tr key={r.robot_id}
+                    onClick={() => setActiveRobotId(r.robot_id)}
+                    style={{ cursor: 'pointer', background: isActive ? 'rgba(99,102,241,0.07)' : 'transparent' }}
+                  >
+                    <td style={{ padding: '0.25rem 0.6rem 0.25rem 0', color: isActive ? '#6366f1' : '#a0aec0', fontWeight: isActive ? 700 : 400 }}>
+                      {r.robot_id || 'default'} {isActive && '◀'}
+                    </td>
+                    <td style={{ padding: '0.25rem 0.6rem', color: r.nav_state === 'navigating' ? '#6ee7b7' : r.nav_state === 'failed' ? '#f87171' : '#e6e9ef' }}>
+                      {r.nav_state || '—'}
+                    </td>
+                    <td style={{ padding: '0.25rem 0.6rem', color: '#8b92a8' }}>{r.current_route || '—'}</td>
+                    <td style={{ padding: '0.25rem 0.6rem', color: r.collection_on ? '#6ee7b7' : '#4b5563' }}>{r.collection_on ? 'ON' : 'OFF'}</td>
+                    <td style={{ padding: '0.25rem 0.6rem', color: '#93c5fd' }}>{p.valid ? p.x?.toFixed(2) : '—'}</td>
+                    <td style={{ padding: '0.25rem 0.6rem', color: '#93c5fd' }}>{p.valid ? p.y?.toFixed(2) : '—'}</td>
+                    <td style={{ padding: '0.25rem 0.6rem', color: '#93c5fd' }}>{p.valid ? `${deg(p.yaw)}°` : '—'}</td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       {/* ── Painéis de robô ── */}
       <div style={{
