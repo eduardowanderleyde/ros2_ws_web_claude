@@ -22,6 +22,7 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import (
     AppendEnvironmentVariable,
+    ExecuteProcess,
     IncludeLaunchDescription,
     OpaqueFunction,
     TimerAction,
@@ -144,27 +145,37 @@ def _robot_nodes(robot_id: str, x: float, y: float,
         output='screen',
     )
 
-    # 4. Nav2 + SLAM (namespace=robot_id, use_composition=False para multi-robô)
-    #    TimerAction garante que o robô já foi spawned antes de iniciar Nav2
+    fleet_bringup_dir = get_package_share_directory('fleet_bringup')
+
+    # 4. SLAM + Nav2 sem collision_monitor (TimerAction: aguarda spawn)
     nav2 = TimerAction(
         period=5.0,
         actions=[
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource(
-                    os.path.join(nav2_bringup_dir, 'launch', 'bringup_launch.py')
+                    os.path.join(nav2_bringup_dir, 'launch', 'slam_launch.py')
                 ),
                 launch_arguments={
                     'namespace': robot_id,
-                    'use_namespace': 'true',
-                    'slam': 'True',
                     'use_sim_time': 'true',
                     'autostart': 'true',
                     'params_file': nav2_yaml,
-                    'use_composition': 'False',
+                    'log_level': 'warn',
+                }.items(),
+            ),
+            IncludeLaunchDescription(
+                PythonLaunchDescriptionSource(
+                    os.path.join(fleet_bringup_dir, 'launch', 'fleet_nav_launch.launch.py')
+                ),
+                launch_arguments={
+                    'namespace': robot_id,
+                    'use_sim_time': 'true',
+                    'autostart': 'true',
+                    'params_file': nav2_yaml,
                     'use_respawn': 'False',
                     'log_level': 'warn',
                 }.items(),
-            )
+            ),
         ],
     )
 
@@ -185,9 +196,24 @@ def launch_setup(context, *args, **kwargs):
     tb2_nav2   = os.path.join(pkg, 'params', 'tb2_nav2.yaml')
     multi_yaml = os.path.join(pkg, 'config', 'multi_robot_sim.yaml')
 
+    # Relay: merge /tb1/tf e /tb2/tf no /tf global (fleet_orchestrator e scripts usam /tf global)
+    _install_prefix = os.path.dirname(get_package_share_directory('fleet_bringup')).replace('/share', '')
+    _tf_relay_bin = os.path.join(_install_prefix, 'bin', 'tf_relay')
+    tf_relay_tb1 = ExecuteProcess(
+        cmd=[_tf_relay_bin, '--ros-args', '-p', 'robot_id:=tb1'],
+        name='tf_relay_tb1',
+        output='screen',
+    )
+    tf_relay_tb2 = ExecuteProcess(
+        cmd=[_tf_relay_bin, '--ros-args', '-p', 'robot_id:=tb2'],
+        name='tf_relay_tb2',
+        output='screen',
+    )
+
     nodes = []
     nodes += _robot_nodes('tb1', -2.0, -0.5, tb1_bridge, tb1_nav2)
     nodes += _robot_nodes('tb2', -2.0,  0.5, tb2_bridge, tb2_nav2)
+    nodes += [tf_relay_tb1, tf_relay_tb2]
 
     orchestrator = Node(
         package='fleet_orchestrator',

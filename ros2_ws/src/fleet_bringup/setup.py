@@ -26,6 +26,8 @@ setup(
     description='Launch files for multi-robot fleet simulation.',
     license='Apache-2.0',
     entry_points={
-        'console_scripts': [],
+        'console_scripts': [
+            'tf_relay = fleet_bringup.tf_relay:main',
+        ],
     },
 )

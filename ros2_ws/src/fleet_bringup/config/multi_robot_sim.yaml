@@ -6,10 +6,10 @@ fleet_orchestrator:
     robots: ["tb1", "tb2"]
     use_shared_map_frame: false   # cada robô tem seu próprio frame tb1/map, tb2/map
     use_sim_time: true
-    routes_dir: "routes"
+    routes_dir: "/home/eduardo/Documentos/ros2_ws/ros2_ws/routes"
 
 sensor_collector:
   ros__parameters:
     robots: ["tb1", "tb2"]
-    collections_dir: "collections"
+    collections_dir: "/home/eduardo/Documentos/ros2_ws/ros2_ws/collections"
     use_sim_time: true

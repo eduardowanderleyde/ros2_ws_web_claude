@@ -83,10 +83,10 @@ class SensorCollector(Node):
         return True
 
     def _qos_sensor(self) -> QoSProfile:
-        """BEST_EFFORT para sensores (scan, odom, imu) — compatível com Gazebo."""
+        """RELIABLE para sensores — ros_gz_bridge publica com RELIABLE."""
         return QoSProfile(
             depth=10,
-            reliability=ReliabilityPolicy.BEST_EFFORT,
+            reliability=ReliabilityPolicy.RELIABLE,
             history=HistoryPolicy.KEEP_LAST,
             durability=DurabilityPolicy.VOLATILE,
         )

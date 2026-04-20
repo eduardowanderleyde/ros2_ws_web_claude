@@ -167,8 +167,8 @@ class FleetOrchestrator(Node):
 
     def _map_base(self, robot_id: str) -> tuple[str, str]:
         if robot_id == "":
-            return "map", "base_link"
-        return f"{robot_id}/map", f"{robot_id}/base_link"
+            return "map", "base_footprint"
+        return f"{robot_id}/map", f"{robot_id}/base_footprint"
 
     def _action_name(self, robot_id: str) -> str:
         if robot_id == "":

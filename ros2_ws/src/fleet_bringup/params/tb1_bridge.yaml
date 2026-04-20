@@ -8,6 +8,7 @@
   ros_type_name: "rosgraph_msgs/msg/Clock"
   gz_type_name: "gz.msgs.Clock"
   direction: GZ_TO_ROS
+  lazy: false
 
 # Joint states
 - ros_topic_name: "tb1/joint_states"
@@ -15,6 +16,7 @@
   ros_type_name: "sensor_msgs/msg/JointState"
   gz_type_name: "gz.msgs.Model"
   direction: GZ_TO_ROS
+  lazy: false
 
 # Odometria (frame_id modificado no SDF: tb1/odom → tb1/base_footprint)
 - ros_topic_name: "tb1/odom"
@@ -22,6 +24,7 @@
   ros_type_name: "nav_msgs/msg/Odometry"
   gz_type_name: "gz.msgs.Odometry"
   direction: GZ_TO_ROS
+  lazy: false
 
 # TF do DiffDrive (tf_topic relativo no SDF → Gz publica tb1/tf)
 - ros_topic_name: "tb1/tf"
@@ -29,6 +32,7 @@
   ros_type_name: "tf2_msgs/msg/TFMessage"
   gz_type_name: "gz.msgs.Pose_V"
   direction: GZ_TO_ROS
+  lazy: false
 
 # Comando de velocidade (Nav2 publica em /tb1/cmd_vel via namespace)
 - ros_topic_name: "tb1/cmd_vel"
@@ -43,6 +47,7 @@
   ros_type_name: "sensor_msgs/msg/Imu"
   gz_type_name: "gz.msgs.IMU"
   direction: GZ_TO_ROS
+  lazy: false
 
 # LiDAR
 - ros_topic_name: "tb1/scan"
@@ -50,3 +55,4 @@
   ros_type_name: "sensor_msgs/msg/LaserScan"
   gz_type_name: "gz.msgs.LaserScan"
   direction: GZ_TO_ROS
+  lazy: false
