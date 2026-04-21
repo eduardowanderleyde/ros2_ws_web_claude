@@ -280,7 +280,7 @@ class FleetOrchestrator(Node):
         st = self._state[robot_id]
         if len(poses) == 1:
             client = self._nav_clients[robot_id]
-            if not client.wait_for_server(timeout_sec=3.0):
+            if not client.wait_for_server(timeout_sec=20.0):
                 st.nav_state = "failed"
                 st.last_error = "NAV2_UNAVAILABLE"
                 return False, "Nav2 navigate_to_pose not available", "NAV2_UNAVAILABLE"
@@ -288,7 +288,7 @@ class FleetOrchestrator(Node):
             goal.pose = poses[0]
         else:
             client = self._wp_clients[robot_id]
-            if not client.wait_for_server(timeout_sec=3.0):
+            if not client.wait_for_server(timeout_sec=20.0):
                 st.nav_state = "failed"
                 st.last_error = "NAV2_UNAVAILABLE"
                 return False, "Nav2 follow_waypoints not available", "NAV2_UNAVAILABLE"

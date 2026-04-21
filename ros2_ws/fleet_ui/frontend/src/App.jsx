@@ -11,6 +11,57 @@ const ROBOT_PROFILES = [
   { id: 'tb3_2',  label: 'TurtleBot3 #2',           type: 'ssh', host: '192.168.1.102' },
 ]
 
+const EXAMPLE_RECORD_TB1 = JSON.stringify({
+  command: "record",
+  robot: "tb1",
+  route: "percurso_tb1",
+  collect: true,
+  topics: ["scan", "odom", "imu", "pose"],
+  initial_pose: [0, 0, 0],
+  points: [
+    [0.5, 0.0, 0.0],
+    [1.0, 0.0, 0.0],
+    [1.5, 0.5, 0.0],
+    [2.0, 0.5, 0.0]
+  ]
+}, null, 2)
+
+const EXAMPLE_RECORD_TB2 = JSON.stringify({
+  command: "record",
+  robot: "tb2",
+  route: "percurso_tb2",
+  collect: true,
+  topics: ["scan", "odom", "imu", "pose"],
+  initial_pose: [1.0, 1.0, 0],
+  points: [
+    [1.5, 1.0, 0.0],
+    [2.0, 1.0, 0.0],
+    [2.5, 1.5, 0.0],
+    [3.0, 1.5, 0.0]
+  ]
+}, null, 2)
+
+const EXAMPLE_REPLAY_TB1 = JSON.stringify({
+  command: "replay",
+  robot: "tb1",
+  route: "percurso_tb1",
+  collect: true,
+  topics: ["scan", "odom", "imu", "pose"],
+  initial_pose: [0, 0, 0],
+  return_to_start: [0, 0, 0]
+}, null, 2)
+
+const EXAMPLE_REPLAY_TB2 = JSON.stringify({
+  command: "replay",
+  robot: "tb2",
+  route: "percurso_tb2",
+  collect: true,
+  topics: ["scan", "odom", "imu", "pose"],
+  initial_pose: [1.0, 1.0, 0],
+  return_to_start: [1.0, 1.0, 0]
+}, null, 2)
+
+// Modo robô único (botão "único" no editor tb1)
 const EXAMPLE_RECORD = JSON.stringify({
   command: "record",
   robot: "default",
@@ -26,24 +77,16 @@ const EXAMPLE_RECORD = JSON.stringify({
   ]
 }, null, 2)
 
-const EXAMPLE_REPLAY = JSON.stringify({
-  command: "replay",
-  robot: "default",
-  route: "percurso1",
-  collect: true,
-  topics: ["scan", "odom", "imu", "pose"],
-  initial_pose: [0, 0, 0],
-  return_to_start: [0, 0, 0]
-}, null, 2)
-
 export default function App() {
-  const [config, setConfig]         = useState(EXAMPLE_RECORD)
-  const [jobId, setJobId]           = useState(null)
-  const [job, setJob]               = useState(null)
-  const [running, setRunning]       = useState(false)
-  const [parseError, setParseError] = useState(null)
-  const [showResult, setShowResult] = useState(false)
-  const [status, setStatus]         = useState({ robots: [], pose: { x: 0, y: 0, yaw: 0, valid: false } })
+  const [config, setConfig]           = useState(EXAMPLE_RECORD_TB1)
+  const [config2, setConfig2]         = useState(EXAMPLE_RECORD_TB2)
+  const [jobId, setJobId]             = useState(null)
+  const [job, setJob]                 = useState(null)
+  const [running, setRunning]         = useState(false)
+  const [parseError, setParseError]   = useState(null)
+  const [parseError2, setParseError2] = useState(null)
+  const [showResult, setShowResult]   = useState(false)
+  const [status, setStatus]           = useState({ robots: [], pose: { x: 0, y: 0, yaw: 0, valid: false } })
 
   // ── Job tb2 (Executar Ambos) ──────────────────────────────────────
   const [jobId2, setJobId2]     = useState(null)
@@ -234,16 +277,19 @@ export default function App() {
 
   const runBoth = async () => {
     setParseError(null)
-    let cfg
-    try { cfg = JSON.parse(config) }
-    catch (e) { setParseError(`JSON inválido: ${e.message}`); return }
+    setParseError2(null)
+    let cfg1, cfg2
+    try { cfg1 = JSON.parse(config) }
+    catch (e) { setParseError(`JSON inválido (tb1): ${e.message}`); return }
+    try { cfg2 = JSON.parse(config2) }
+    catch (e) { setParseError2(`JSON inválido (tb2): ${e.message}`); return }
 
     setRunning(true);  setJob(null);  setJobId(null)
     setRunning2(true); setJob2(null); setJobId2(null)
 
     const [r1, r2] = await Promise.all([
-      fetch(`${API}/run_config`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...cfg, robot: 'tb1' }) }).catch(() => null),
-      fetch(`${API}/run_config`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...cfg, robot: 'tb2' }) }).catch(() => null),
+      fetch(`${API}/run_config`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cfg1) }).catch(() => null),
+      fetch(`${API}/run_config`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cfg2) }).catch(() => null),
     ])
     const d1 = r1 ? await r1.json().catch(() => null) : null
     const d2 = r2 ? await r2.json().catch(() => null) : null
@@ -518,40 +564,79 @@ export default function App() {
 
         {/* Coluna esquerda: config */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <span style={{ fontSize: '0.8rem', fontWeight: 600, color: '#8b92a8', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-              Configuração (JSON)
-            </span>
-            <div style={{ display: 'flex', gap: '0.5rem' }}>
-              <button onClick={() => setConfig(EXAMPLE_RECORD)} style={btnStyle('#161a22', '#2a3142')}>Exemplo record</button>
-              <button onClick={() => setConfig(EXAMPLE_REPLAY)} style={btnStyle('#161a22', '#2a3142')}>Exemplo replay</button>
+
+          {/* Editor tb1 */}
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '0.5rem', minHeight: 0 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ fontSize: '0.8rem', fontWeight: 600, color: '#6ee7b7', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                tb1 · Config
+              </span>
+              <div style={{ display: 'flex', gap: '0.5rem' }}>
+                <button onClick={() => { setConfig(EXAMPLE_RECORD_TB1); setParseError(null) }} style={btnStyle('#161a22', '#2a3142')}>record</button>
+                <button onClick={() => { setConfig(EXAMPLE_REPLAY_TB1); setParseError(null) }} style={btnStyle('#161a22', '#2a3142')}>replay</button>
+                <button onClick={() => { setConfig(EXAMPLE_RECORD); setParseError(null) }} style={btnStyle('#161a22', '#2a3142')}>único</button>
+              </div>
             </div>
+            <textarea
+              value={config}
+              onChange={e => { setConfig(e.target.value); setParseError(null) }}
+              spellCheck={false}
+              style={{
+                flex: 1,
+                background: '#161a22',
+                border: `1px solid ${parseError ? '#f87171' : '#2a3142'}`,
+                borderRadius: '8px',
+                color: '#e6e9ef',
+                fontFamily: 'JetBrains Mono, Consolas, monospace',
+                fontSize: '0.82rem',
+                padding: '0.75rem',
+                resize: 'none',
+                outline: 'none',
+                lineHeight: 1.6,
+              }}
+            />
+            {parseError && (
+              <div style={{ color: '#f87171', fontSize: '0.78rem', padding: '0.4rem 0.6rem', background: 'rgba(248,113,113,0.1)', borderRadius: '6px' }}>
+                {parseError}
+              </div>
+            )}
           </div>
 
-          <textarea
-            value={config}
-            onChange={e => { setConfig(e.target.value); setParseError(null) }}
-            spellCheck={false}
-            style={{
-              flex: 1,
-              background: '#161a22',
-              border: `1px solid ${parseError ? '#f87171' : '#2a3142'}`,
-              borderRadius: '8px',
-              color: '#e6e9ef',
-              fontFamily: 'JetBrains Mono, Consolas, monospace',
-              fontSize: '0.85rem',
-              padding: '1rem',
-              resize: 'none',
-              outline: 'none',
-              lineHeight: 1.6,
-            }}
-          />
-
-          {parseError && (
-            <div style={{ color: '#f87171', fontSize: '0.82rem', padding: '0.5rem 0.75rem', background: 'rgba(248,113,113,0.1)', borderRadius: '6px' }}>
-              {parseError}
+          {/* Editor tb2 */}
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '0.5rem', minHeight: 0 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ fontSize: '0.8rem', fontWeight: 600, color: '#a5b4fc', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                tb2 · Config
+              </span>
+              <div style={{ display: 'flex', gap: '0.5rem' }}>
+                <button onClick={() => { setConfig2(EXAMPLE_RECORD_TB2); setParseError2(null) }} style={btnStyle('#161a22', '#2a3142')}>record</button>
+                <button onClick={() => { setConfig2(EXAMPLE_REPLAY_TB2); setParseError2(null) }} style={btnStyle('#161a22', '#2a3142')}>replay</button>
+              </div>
             </div>
-          )}
+            <textarea
+              value={config2}
+              onChange={e => { setConfig2(e.target.value); setParseError2(null) }}
+              spellCheck={false}
+              style={{
+                flex: 1,
+                background: '#161a22',
+                border: `1px solid ${parseError2 ? '#f87171' : '#2a2a42'}`,
+                borderRadius: '8px',
+                color: '#e6e9ef',
+                fontFamily: 'JetBrains Mono, Consolas, monospace',
+                fontSize: '0.82rem',
+                padding: '0.75rem',
+                resize: 'none',
+                outline: 'none',
+                lineHeight: 1.6,
+              }}
+            />
+            {parseError2 && (
+              <div style={{ color: '#f87171', fontSize: '0.78rem', padding: '0.4rem 0.6rem', background: 'rgba(248,113,113,0.1)', borderRadius: '6px' }}>
+                {parseError2}
+              </div>
+            )}
+          </div>
 
           {!isConnected && (
             <div style={{ color: '#fbbf24', fontSize: '0.82rem', padding: '0.5rem 0.75rem', background: 'rgba(251,191,36,0.08)', borderRadius: '6px', border: '1px solid rgba(251,191,36,0.2)' }}>
@@ -568,15 +653,15 @@ export default function App() {
             <button
               onClick={run}
               disabled={running || running2 || !isConnected}
-              title={!isConnected ? 'Conecte um robô primeiro' : ''}
+              title={!isConnected ? 'Conecte um robô primeiro' : 'Executa só o JSON tb1'}
               style={btnStyle(running || running2 || !isConnected ? '#1a3a2a' : '#065f46', '#6ee7b7', '1rem', running || running2 || !isConnected)}
             >
-              {running && !running2 ? '⏳ A executar…' : '▶ Executar'}
+              {running && !running2 ? '⏳ A executar…' : '▶ Executar tb1'}
             </button>
             <button
               onClick={runBoth}
               disabled={running || running2 || !isConnected}
-              title={!isConnected ? 'Conecte um robô primeiro' : 'Executa tb1 e tb2 em paralelo'}
+              title={!isConnected ? 'Conecte um robô primeiro' : 'Executa tb1 e tb2 com JSONs separados'}
               style={btnStyle(running || running2 || !isConnected ? '#1a1a3a' : '#1e1b4b', '#a5b4fc', '1rem', running || running2 || !isConnected)}
             >
               {running && running2 ? '⏳ Executando ambos…' : '▶▶ Executar Ambos'}

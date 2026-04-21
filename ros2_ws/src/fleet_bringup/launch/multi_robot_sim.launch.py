@@ -119,9 +119,9 @@ def _robot_nodes(robot_id: str, x: float, y: float,
         )],
     )
 
-    # 2. Bridge Gz ↔ ROS — inicia após spawn (spawn+2s para sensores inicializarem)
+    # 2. Bridge Gz ↔ ROS — inicia logo após spawn para sensores estarem prontos antes do Nav2
     bridge = TimerAction(
-        period=8.0,
+        period=6.0,
         actions=[Node(
             package='ros_gz_bridge',
             executable='parameter_bridge',
@@ -150,10 +150,9 @@ def _robot_nodes(robot_id: str, x: float, y: float,
         output='screen',
     )
 
-    # 4. Nav2 + SLAM (namespace=robot_id, use_composition=False para multi-robô)
-    #    TimerAction garante que o robô já foi spawned antes de iniciar Nav2
+    # 4. Nav2 + SLAM — inicia após bridge (t=6s) para já ter sensores disponíveis
     nav2 = TimerAction(
-        period=5.0,
+        period=10.0,
         actions=[
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource(
