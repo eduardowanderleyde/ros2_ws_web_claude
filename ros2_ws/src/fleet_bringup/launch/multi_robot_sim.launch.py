@@ -22,10 +22,13 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import (
     AppendEnvironmentVariable,
+    DeclareLaunchArgument,
     IncludeLaunchDescription,
     OpaqueFunction,
     TimerAction,
 )
+from launch.conditions import IfCondition, UnlessCondition
+from launch.substitutions import LaunchConfiguration
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterFile
@@ -220,7 +223,9 @@ def generate_launch_description():
 
     world = os.path.join(pkg_gazebo, 'worlds', 'turtlebot3_world.world')
 
-    # Gz server (headless -s) + client (-g) separados
+    headless = LaunchConfiguration('headless')
+
+    # Gz server — sempre roda (física + sensores)
     gz_server = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(ros_gz_sim, 'launch', 'gz_sim.launch.py')
@@ -230,6 +235,7 @@ def generate_launch_description():
             'on_exit_shutdown': 'true',
         }.items(),
     )
+    # Gz client (GUI) — só sobe se headless:=false
     gz_client = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(ros_gz_sim, 'launch', 'gz_sim.launch.py')
@@ -238,6 +244,7 @@ def generate_launch_description():
             'gz_args': '-g -v2',
             'on_exit_shutdown': 'true',
         }.items(),
+        condition=UnlessCondition(headless),
     )
 
     # Bridge do clock (compartilhado — um único)
@@ -255,6 +262,11 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
+        DeclareLaunchArgument(
+            'headless',
+            default_value='false',
+            description='Se true, não abre a janela do Gazebo (economiza CPU/RAM)',
+        ),
         set_gz_resources,
         gz_server,
         gz_client,
