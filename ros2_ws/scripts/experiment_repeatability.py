@@ -131,8 +131,9 @@ def _parse_points(s: str) -> List[Tuple[float, float, float]]:
 
 class FleetExperimentNode(Node):
     def __init__(self, *, use_sim_time: bool = True, enable_tf: bool = True, robot_id: str = "") -> None:
+        node_name = f"experiment_repeatability_{robot_id}" if robot_id else "experiment_repeatability"
         super().__init__(
-            "experiment_repeatability",
+            node_name,
             parameter_overrides=[
                 Parameter("use_sim_time", Parameter.Type.BOOL, use_sim_time),
             ],
