@@ -44,6 +44,12 @@ export default function App() {
   const [parseError, setParseError] = useState(null)
   const [showResult, setShowResult] = useState(false)
   const [status, setStatus]         = useState({ robots: [], pose: { x: 0, y: 0, yaw: 0, valid: false } })
+
+  // ── Job tb2 (Executar Ambos) ──────────────────────────────────────
+  const [jobId2, setJobId2]     = useState(null)
+  const [job2, setJob2]         = useState(null)
+  const [running2, setRunning2] = useState(false)
+  const pollRef2                = useRef(null)
   const [resetMsg, setResetMsg]     = useState(null)
   const [resetting, setResetting]   = useState(false)
 
@@ -65,6 +71,7 @@ export default function App() {
   const discoverRef                       = useRef(null)
 
   const outputRef  = useRef(null)
+  const outputRef2 = useRef(null)
   const pollRef    = useRef(null)
   const panelRef   = useRef(null)
 
@@ -95,17 +102,29 @@ export default function App() {
       const data = await r.json().catch(() => null)
       if (!data) return
       setJob(data)
-      if (!data.running) {
-        clearInterval(pollRef.current)
-        setRunning(false)
-      }
+      if (!data.running) { clearInterval(pollRef.current); setRunning(false) }
     }, 500)
   }, [])
 
-  // Auto-scroll output
+  const startPolling2 = useCallback((id) => {
+    if (pollRef2.current) clearInterval(pollRef2.current)
+    pollRef2.current = setInterval(async () => {
+      const r = await fetch(`${API}/job/${id}`).catch(() => null)
+      if (!r) return
+      const data = await r.json().catch(() => null)
+      if (!data) return
+      setJob2(data)
+      if (!data.running) { clearInterval(pollRef2.current); setRunning2(false) }
+    }, 500)
+  }, [])
+
+  // Auto-scroll outputs
   useEffect(() => {
     if (outputRef.current) outputRef.current.scrollTop = outputRef.current.scrollHeight
   }, [job?.lines?.length])
+  useEffect(() => {
+    if (outputRef2.current) outputRef2.current.scrollTop = outputRef2.current.scrollHeight
+  }, [job2?.lines?.length])
 
   // ── Conectar robô ─────────────────────────────────────────────────
   const connectRobot = async () => {
@@ -211,6 +230,27 @@ export default function App() {
   const stop = () => {
     if (pollRef.current) clearInterval(pollRef.current)
     setRunning(false)
+  }
+
+  const runBoth = async () => {
+    setParseError(null)
+    let cfg
+    try { cfg = JSON.parse(config) }
+    catch (e) { setParseError(`JSON inválido: ${e.message}`); return }
+
+    setRunning(true);  setJob(null);  setJobId(null)
+    setRunning2(true); setJob2(null); setJobId2(null)
+
+    const [r1, r2] = await Promise.all([
+      fetch(`${API}/run_config`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...cfg, robot: 'tb1' }) }).catch(() => null),
+      fetch(`${API}/run_config`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...cfg, robot: 'tb2' }) }).catch(() => null),
+    ])
+    const d1 = r1 ? await r1.json().catch(() => null) : null
+    const d2 = r2 ? await r2.json().catch(() => null) : null
+
+    if (d1?.job_id) { setJobId(d1.job_id); startPolling(d1.job_id) } else { setRunning(false) }
+    if (d2?.job_id) { setJobId2(d2.job_id); startPolling2(d2.job_id) } else { setRunning2(false) }
+    if (!d1?.job_id && !d2?.job_id) setParseError((d1 || d2)?.message || 'Erro ao iniciar jobs')
   }
 
   const resetToOrigin = async () => {
@@ -524,17 +564,25 @@ export default function App() {
             </div>
           )}
 
-          <div style={{ display: 'flex', gap: '0.75rem' }}>
+          <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
             <button
               onClick={run}
-              disabled={running || !isConnected}
+              disabled={running || running2 || !isConnected}
               title={!isConnected ? 'Conecte um robô primeiro' : ''}
-              style={btnStyle(running || !isConnected ? '#1a3a2a' : '#065f46', '#6ee7b7', '1rem', running || !isConnected)}
+              style={btnStyle(running || running2 || !isConnected ? '#1a3a2a' : '#065f46', '#6ee7b7', '1rem', running || running2 || !isConnected)}
             >
-              {running ? '⏳ A executar…' : '▶ Executar'}
+              {running && !running2 ? '⏳ A executar…' : '▶ Executar'}
             </button>
-            {running && (
-              <button onClick={stop} style={btnStyle('#3a1a1a', '#f87171')}>
+            <button
+              onClick={runBoth}
+              disabled={running || running2 || !isConnected}
+              title={!isConnected ? 'Conecte um robô primeiro' : 'Executa tb1 e tb2 em paralelo'}
+              style={btnStyle(running || running2 || !isConnected ? '#1a1a3a' : '#1e1b4b', '#a5b4fc', '1rem', running || running2 || !isConnected)}
+            >
+              {running && running2 ? '⏳ Executando ambos…' : '▶▶ Executar Ambos'}
+            </button>
+            {(running || running2) && (
+              <button onClick={() => { stop(); if (pollRef2.current) clearInterval(pollRef2.current); setRunning2(false) }} style={btnStyle('#3a1a1a', '#f87171')}>
                 ■ Parar polling
               </button>
             )}
@@ -543,9 +591,11 @@ export default function App() {
 
         {/* Coluna direita: output */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', minHeight: 0, overflow: 'hidden' }}>
+
+          {/* Painel tb1 (ou único) */}
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <span style={{ fontSize: '0.8rem', fontWeight: 600, color: '#8b92a8', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-              Output {jobId && <span style={{ color: '#3b82f6', fontWeight: 400 }}>#{jobId}</span>}
+              {(job2 || running2) ? 'tb1' : 'Output'} {jobId && <span style={{ color: '#3b82f6', fontWeight: 400 }}>#{jobId}</span>}
             </span>
             {job && !job.running && (
               <span style={{ fontSize: '0.82rem', color: job.exit_code === 0 ? '#6ee7b7' : '#f87171', fontWeight: 600 }}>
@@ -580,6 +630,44 @@ export default function App() {
               <div style={{ color: '#8b92a8', animation: 'blink 1s step-end infinite' }}>▌</div>
             )}
           </div>
+
+          {/* Painel tb2 — visível apenas em Executar Ambos */}
+          {(job2 || running2) && (<>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ fontSize: '0.8rem', fontWeight: 600, color: '#8b92a8', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                tb2 {jobId2 && <span style={{ color: '#3b82f6', fontWeight: 400 }}>#{jobId2}</span>}
+              </span>
+              {job2 && !job2.running && (
+                <span style={{ fontSize: '0.82rem', color: job2.exit_code === 0 ? '#6ee7b7' : '#f87171', fontWeight: 600 }}>
+                  {job2.exit_code === 0 ? '✓ Sucesso' : `✗ Falhou (exit ${job2.exit_code})`}
+                </span>
+              )}
+            </div>
+            <div
+              ref={outputRef2}
+              style={{
+                flex: 1,
+                background: '#161a22',
+                border: '1px solid #2a2a42',
+                borderRadius: '8px',
+                padding: '0.75rem 1rem',
+                overflowY: 'auto',
+                fontFamily: 'JetBrains Mono, Consolas, monospace',
+                fontSize: '0.78rem',
+                lineHeight: 1.7,
+              }}
+            >
+              {!job2 && running2 && <span style={{ color: '#8b92a8' }}>Iniciando tb2…</span>}
+              {job2?.lines?.map((line, i) => (
+                <div key={i} style={{ color: lineColor(line), whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                  {line}
+                </div>
+              ))}
+              {running2 && (
+                <div style={{ color: '#8b92a8', animation: 'blink 1s step-end infinite' }}>▌</div>
+              )}
+            </div>
+          </>)}
 
           {job?.result && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
