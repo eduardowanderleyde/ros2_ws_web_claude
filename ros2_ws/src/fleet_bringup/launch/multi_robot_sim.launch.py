@@ -144,8 +144,6 @@ def _robot_nodes(robot_id: str, x: float, y: float,
         }],
         remappings=[
             ('joint_states', f'/{robot_id}/joint_states'),
-            ('/tf', f'/{robot_id}/tf'),
-            ('/tf_static', f'/{robot_id}/tf_static'),
         ],
         output='screen',
     )
