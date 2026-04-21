@@ -1,5 +1,13 @@
 # Bridge Gazebo → ROS para o robô tb2.
 
+# Clock
+- ros_topic_name: "clock"
+  gz_topic_name: "clock"
+  ros_type_name: "rosgraph_msgs/msg/Clock"
+  gz_type_name: "gz.msgs.Clock"
+  direction: GZ_TO_ROS
+  lazy: false
+
 # Joint states
 - ros_topic_name: "tb2/joint_states"
   gz_topic_name: "tb2/joint_states"
@@ -24,10 +32,10 @@
   direction: GZ_TO_ROS
   lazy: false
 
-# Comando de velocidade
+# Comando de velocidade — Twist (não TwistStamped) compatível com DiffDrive do Gazebo
 - ros_topic_name: "tb2/cmd_vel"
   gz_topic_name: "tb2/cmd_vel"
-  ros_type_name: "geometry_msgs/msg/TwistStamped"
+  ros_type_name: "geometry_msgs/msg/Twist"
   gz_type_name: "gz.msgs.Twist"
   direction: ROS_TO_GZ
 

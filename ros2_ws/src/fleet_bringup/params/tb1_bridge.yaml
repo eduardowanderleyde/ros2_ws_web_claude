@@ -35,10 +35,10 @@
   direction: GZ_TO_ROS
   lazy: false
 
-# Comando de velocidade (Nav2 publica em /tb1/cmd_vel via namespace)
+# Comando de velocidade — Twist (não TwistStamped) compatível com DiffDrive do Gazebo
 - ros_topic_name: "tb1/cmd_vel"
   gz_topic_name: "tb1/cmd_vel"
-  ros_type_name: "geometry_msgs/msg/TwistStamped"
+  ros_type_name: "geometry_msgs/msg/Twist"
   gz_type_name: "gz.msgs.Twist"
   direction: ROS_TO_GZ
 
