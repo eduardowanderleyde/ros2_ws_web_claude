@@ -101,28 +101,34 @@ def _robot_nodes(robot_id: str, x: float, y: float,
     with open(urdf_path) as fh:
         robot_desc = fh.read()
 
-    # 1. Spawn no Gazebo
-    spawn = Node(
-        package='ros_gz_sim',
-        executable='create',
-        name=f'spawn_{robot_id}',
-        arguments=[
-            '-name', robot_id,
-            '-file', sdf_file,
-            '-x', str(x),
-            '-y', str(y),
-            '-z', '0.01',
-        ],
-        output='screen',
+    # 1. Spawn no Gazebo — TimerAction dá tempo ao Gz server para estar pronto
+    spawn = TimerAction(
+        period=5.0,
+        actions=[Node(
+            package='ros_gz_sim',
+            executable='create',
+            name=f'spawn_{robot_id}',
+            arguments=[
+                '-name', robot_id,
+                '-file', sdf_file,
+                '-x', str(x),
+                '-y', str(y),
+                '-z', '0.01',
+            ],
+            output='screen',
+        )],
     )
 
-    # 2. Bridge Gz ↔ ROS (por robô)
-    bridge = Node(
-        package='ros_gz_bridge',
-        executable='parameter_bridge',
-        name=f'bridge_{robot_id}',
-        arguments=['--ros-args', '-p', f'config_file:={bridge_yaml}'],
-        output='screen',
+    # 2. Bridge Gz ↔ ROS — inicia após spawn (spawn+2s para sensores inicializarem)
+    bridge = TimerAction(
+        period=8.0,
+        actions=[Node(
+            package='ros_gz_bridge',
+            executable='parameter_bridge',
+            name=f'bridge_{robot_id}',
+            arguments=['--ros-args', '-p', f'config_file:={bridge_yaml}'],
+            output='screen',
+        )],
     )
 
     # 3. Robot State Publisher com frame_prefix para isolar TF
