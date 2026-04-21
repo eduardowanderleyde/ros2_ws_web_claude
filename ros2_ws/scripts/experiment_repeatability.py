@@ -439,7 +439,9 @@ def _bag_compute_metrics(bag_path: Optional[str], robot_id: str = "") -> dict:
                     msg = deserialize_message(data, _Odom)
                     x, y = msg.pose.pose.position.x, msg.pose.pose.position.y
                     if prev_xy is not None:
-                        odom_path += _math.hypot(x - prev_xy[0], y - prev_xy[1])
+                        d = _math.hypot(x - prev_xy[0], y - prev_xy[1])
+                        if d < 0.12:  # filtra saltos impossíveis (TurtleBot3 max ~0.005 m/passo a 50 Hz)
+                            odom_path += d
                     prev_xy = (x, y)
                     odom_n += 1
                 except Exception:
