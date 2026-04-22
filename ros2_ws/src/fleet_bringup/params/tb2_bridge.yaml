@@ -1,13 +1,5 @@
 # Bridge Gazebo → ROS para o robô tb2.
 
-# Clock
-- ros_topic_name: "clock"
-  gz_topic_name: "clock"
-  ros_type_name: "rosgraph_msgs/msg/Clock"
-  gz_type_name: "gz.msgs.Clock"
-  direction: GZ_TO_ROS
-  lazy: false
-
 # Joint states
 - ros_topic_name: "tb2/joint_states"
   gz_topic_name: "tb2/joint_states"
@@ -24,8 +16,8 @@
   direction: GZ_TO_ROS
   lazy: false
 
-# TF do DiffDrive — publica em /tf (global) para o TF tree funcionar
-- ros_topic_name: "/tf"
+# TF do DiffDrive — publica em /tb2/tf (namespaceado)
+- ros_topic_name: "tb2/tf"
   gz_topic_name: "tb2/tf"
   ros_type_name: "tf2_msgs/msg/TFMessage"
   gz_type_name: "gz.msgs.Pose_V"

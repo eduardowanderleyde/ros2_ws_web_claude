@@ -69,10 +69,44 @@ def _make_robot_sdf(robot_id: str) -> str:
         '<child_frame_id>base_footprint</child_frame_id>',
         f'<child_frame_id>{robot_id}/base_footprint</child_frame_id>',
     )
-    # Make tf_topic relative so Gz scopes it to "tb1/tf" (not global "/tf")
+    # In Gazebo Harmonic, plugin and sensor <topic> tags do NOT get scoped to
+    # the model namespace automatically. Every output topic must be explicitly
+    # set to an absolute path with the robot_id prefix.
+    content = content.replace(
+        '<odom_topic>odom</odom_topic>',
+        f'<odom_topic>/{robot_id}/odom</odom_topic>',
+    )
     content = content.replace(
         '<tf_topic>/tf</tf_topic>',
-        '<tf_topic>tf</tf_topic>',
+        f'<tf_topic>/{robot_id}/tf</tf_topic>',
+    )
+    # Sensor topics (lidar, imu) — use replace_all=False since there's one each
+    content = content.replace(
+        '<topic>scan</topic>',
+        f'<topic>/{robot_id}/scan</topic>',
+    )
+    # Reduz taxa do LiDAR de 10 Hz para 5 Hz — alivia carga do SLAM com 2 robôs
+    content = content.replace(
+        f'<update_rate>10</update_rate>\n        <topic>/{robot_id}/scan</topic>',
+        f'<update_rate>5</update_rate>\n        <topic>/{robot_id}/scan</topic>',
+    )
+    content = content.replace(
+        '<topic>imu</topic>',
+        f'<topic>/{robot_id}/imu</topic>',
+    )
+    # JointStatePublisher topic
+    content = content.replace(
+        '<topic>joint_states</topic>',
+        f'<topic>/{robot_id}/joint_states</topic>',
+    )
+    # Sensor gz_frame_id must match the TF frames published by RSP (with frame_prefix)
+    content = content.replace(
+        '<gz_frame_id>base_scan</gz_frame_id>',
+        f'<gz_frame_id>{robot_id}/base_scan</gz_frame_id>',
+    )
+    content = content.replace(
+        '<gz_frame_id>camera_rgb_frame</gz_frame_id>',
+        f'<gz_frame_id>{robot_id}/camera_rgb_frame</gz_frame_id>',
     )
 
     tmp = tempfile.NamedTemporaryFile(
@@ -135,7 +169,8 @@ def _robot_nodes(robot_id: str, x: float, y: float,
     )
 
     # 3. Robot State Publisher com frame_prefix para isolar TF
-    #    Subscreve joint_states em /tb1/joint_states via remapping
+    #    Remapeia /tf e /tf_static para o namespace do robô para que o SLAM
+    #    (em namespace tb1) receba os transforms estáticos das juntas.
     rsp = Node(
         package='robot_state_publisher',
         executable='robot_state_publisher',
@@ -147,6 +182,8 @@ def _robot_nodes(robot_id: str, x: float, y: float,
         }],
         remappings=[
             ('joint_states', f'/{robot_id}/joint_states'),
+            ('tf', f'/{robot_id}/tf'),
+            ('tf_static', f'/{robot_id}/tf_static'),
         ],
         output='screen',
     )
@@ -247,18 +284,22 @@ def generate_launch_description():
         condition=UnlessCondition(headless),
     )
 
-    # Bridge do clock (compartilhado — um único)
-    clock_bridge = Node(
-        package='ros_gz_bridge',
-        executable='parameter_bridge',
-        name='clock_bridge',
-        arguments=['/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock]'],
-        output='screen',
-    )
-
     set_gz_resources = AppendEnvironmentVariable(
         'GZ_SIM_RESOURCE_PATH',
         os.path.join(pkg_gazebo, 'models'),
+    )
+
+    # Clock bridge dedicado — nó único, isolado, inicia logo após o Gz server
+    # Nó único evita micro-jitter do clock por contenção de threads com outros tópicos
+    clock_bridge = TimerAction(
+        period=3.0,
+        actions=[Node(
+            package='ros_gz_bridge',
+            executable='parameter_bridge',
+            name='clock_bridge',
+            arguments=['/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock'],
+            output='screen',
+        )],
     )
 
     return LaunchDescription([

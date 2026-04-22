@@ -2,14 +2,6 @@
 # Quando o modelo é spawned com -name tb1, o Gazebo scope os tópicos como tb1/<topic>.
 # Os ros_topic_name ficam em /tb1/<topic> no grafo ROS.
 
-# Clock (shared — só um bridge de clock por sessão; duplicar causa aviso mas não quebra)
-- ros_topic_name: "clock"
-  gz_topic_name: "clock"
-  ros_type_name: "rosgraph_msgs/msg/Clock"
-  gz_type_name: "gz.msgs.Clock"
-  direction: GZ_TO_ROS
-  lazy: false
-
 # Joint states
 - ros_topic_name: "tb1/joint_states"
   gz_topic_name: "tb1/joint_states"
@@ -18,7 +10,7 @@
   direction: GZ_TO_ROS
   lazy: false
 
-# Odometria (frame_id modificado no SDF: tb1/odom → tb1/base_footprint)
+# Odometria
 - ros_topic_name: "tb1/odom"
   gz_topic_name: "tb1/odom"
   ros_type_name: "nav_msgs/msg/Odometry"
@@ -26,9 +18,9 @@
   direction: GZ_TO_ROS
   lazy: false
 
-# TF do DiffDrive — publica em /tf (global) para o TF tree funcionar
-# Frame IDs já têm prefixo tb1/ então não há conflito com tb2
-- ros_topic_name: "/tf"
+# TF do DiffDrive — publica em /tb1/tf (namespaceado) para que os nós Nav2
+# em namespace tb1 recebam junto com o TF do SLAM no mesmo tópico /tb1/tf
+- ros_topic_name: "tb1/tf"
   gz_topic_name: "tb1/tf"
   ros_type_name: "tf2_msgs/msg/TFMessage"
   gz_type_name: "gz.msgs.Pose_V"
