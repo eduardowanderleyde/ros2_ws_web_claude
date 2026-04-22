@@ -23,6 +23,7 @@ from launch import LaunchDescription
 from launch.actions import (
     AppendEnvironmentVariable,
     DeclareLaunchArgument,
+    GroupAction,
     IncludeLaunchDescription,
     OpaqueFunction,
     TimerAction,
@@ -30,7 +31,7 @@ from launch.actions import (
 from launch.conditions import IfCondition, UnlessCondition
 from launch.substitutions import LaunchConfiguration
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch_ros.actions import Node
+from launch_ros.actions import Node, PushROSNamespace, SetParameter, SetRemap
 from launch_ros.parameter_descriptions import ParameterFile
 
 
@@ -124,6 +125,7 @@ def _robot_nodes(robot_id: str, x: float, y: float,
                  bridge_yaml: str, nav2_yaml: str) -> list:
     """Retorna todos os nós/includes necessários para um robô."""
     nav2_bringup_dir = get_package_share_directory('nav2_bringup')
+    slam_toolbox_dir = get_package_share_directory('slam_toolbox')
     TURTLEBOT3_MODEL = os.environ.get('TURTLEBOT3_MODEL', 'waffle')
 
     sdf_file = _make_robot_sdf(robot_id)
@@ -188,7 +190,7 @@ def _robot_nodes(robot_id: str, x: float, y: float,
         output='screen',
     )
 
-    # 4. Nav2 + SLAM — inicia após bridge (t=6s) para já ter sensores disponíveis
+    # 4. Nav2 sem SLAM (slam:=False) — inicia após bridge para já ter sensores disponíveis
     nav2 = TimerAction(
         period=10.0,
         actions=[
@@ -199,7 +201,7 @@ def _robot_nodes(robot_id: str, x: float, y: float,
                 launch_arguments={
                     'namespace': robot_id,
                     'use_namespace': 'true',
-                    'slam': 'True',
+                    'slam': 'False',
                     'use_sim_time': 'true',
                     'autostart': 'true',
                     'params_file': nav2_yaml,
@@ -211,7 +213,48 @@ def _robot_nodes(robot_id: str, x: float, y: float,
         ],
     )
 
-    return [spawn, bridge, rsp, nav2]
+    # 5. SLAM Toolbox assíncrono — lançado separadamente para não depender do
+    #    bringup_launch.py→slam_launch.py→online_sync_launch.py que força modo síncrono.
+    #    GroupAction com PushROSNamespace isola scan/tf/map no namespace de cada robô.
+    slam = TimerAction(
+        period=12.0,
+        actions=[GroupAction(actions=[
+            SetParameter('use_sim_time', True),
+            PushROSNamespace(robot_id),
+            SetRemap(src='/scan', dst='scan'),
+            SetRemap(src='/tf', dst='tf'),
+            SetRemap(src='/tf_static', dst='tf_static'),
+            SetRemap(src='/map', dst='map'),
+            Node(
+                package='nav2_map_server',
+                executable='map_saver_server',
+                output='screen',
+                parameters=[ParameterFile(nav2_yaml, allow_substs=True)],
+            ),
+            Node(
+                package='nav2_lifecycle_manager',
+                executable='lifecycle_manager',
+                name='lifecycle_manager_slam',
+                output='screen',
+                parameters=[{
+                    'autostart': True,
+                    'node_names': ['map_saver'],
+                    'use_sim_time': True,
+                }],
+            ),
+            IncludeLaunchDescription(
+                PythonLaunchDescriptionSource(
+                    os.path.join(slam_toolbox_dir, 'launch', 'online_async_launch.py')
+                ),
+                launch_arguments={
+                    'use_sim_time': 'true',
+                    'slam_params_file': nav2_yaml,
+                }.items(),
+            ),
+        ])],
+    )
+
+    return [spawn, bridge, rsp, nav2, slam]
 
 
 # ---------------------------------------------------------------------------
@@ -297,7 +340,7 @@ def generate_launch_description():
             package='ros_gz_bridge',
             executable='parameter_bridge',
             name='clock_bridge',
-            arguments=['/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock'],
+            arguments=['/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock]'],
             output='screen',
         )],
     )
