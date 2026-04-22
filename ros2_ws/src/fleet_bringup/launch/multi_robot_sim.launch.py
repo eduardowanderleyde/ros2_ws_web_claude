@@ -158,7 +158,9 @@ def _robot_nodes(robot_id: str, x: float, y: float,
         )],
     )
 
-    # 2. Bridge Gz ↔ ROS — inicia logo após spawn para sensores estarem prontos antes do Nav2
+    # 2. Bridge misto Gz ↔ ROS — odom, cmd_vel, imu, scan
+    #    tf e joint_states são isolados em processos dedicados abaixo para evitar
+    #    TF_OLD_DATA causado por contenção de threads no bridge compartilhado.
     bridge = TimerAction(
         period=6.0,
         actions=[Node(
@@ -166,6 +168,40 @@ def _robot_nodes(robot_id: str, x: float, y: float,
             executable='parameter_bridge',
             name=f'bridge_{robot_id}',
             arguments=['--ros-args', '-p', f'config_file:={bridge_yaml}'],
+            output='screen',
+        )],
+    )
+
+    # 2b. Bridge dedicado para TF dinâmico (DiffDrive odom→base_footprint)
+    #     Processo isolado elimina contenção de threads que causava TF_OLD_DATA.
+    tf_bridge = TimerAction(
+        period=6.0,
+        actions=[Node(
+            package='ros_gz_bridge',
+            executable='parameter_bridge',
+            name=f'tf_bridge_{robot_id}',
+            arguments=[
+                f'{robot_id}/tf'
+                f'@tf2_msgs/msg/TFMessage'
+                f'[gz.msgs.Pose_V',
+            ],
+            output='screen',
+        )],
+    )
+
+    # 2c. Bridge dedicado para joint_states (alimenta o robot_state_publisher)
+    #     Processo isolado garante que base_link→wheel_* chegue sem regressão temporal.
+    js_bridge = TimerAction(
+        period=6.0,
+        actions=[Node(
+            package='ros_gz_bridge',
+            executable='parameter_bridge',
+            name=f'js_bridge_{robot_id}',
+            arguments=[
+                f'{robot_id}/joint_states'
+                f'@sensor_msgs/msg/JointState'
+                f'[gz.msgs.Model',
+            ],
             output='screen',
         )],
     )
@@ -254,7 +290,7 @@ def _robot_nodes(robot_id: str, x: float, y: float,
         ])],
     )
 
-    return [spawn, bridge, rsp, nav2, slam]
+    return [spawn, bridge, tf_bridge, js_bridge, rsp, nav2, slam]
 
 
 # ---------------------------------------------------------------------------

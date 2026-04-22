@@ -1,26 +1,12 @@
-# Bridge Gazebo → ROS para o robô tb2.
-
-# Joint states
-- ros_topic_name: "tb2/joint_states"
-  gz_topic_name: "tb2/joint_states"
-  ros_type_name: "sensor_msgs/msg/JointState"
-  gz_type_name: "gz.msgs.Model"
-  direction: GZ_TO_ROS
-  lazy: false
+# Bridge Gazebo → ROS para o robô tb2 — apenas tópicos de sensores/controle.
+# tf e joint_states foram movidos para bridges dedicados em multi_robot_sim.launch.py
+# para evitar TF_OLD_DATA causado por contenção de threads no bridge misto.
 
 # Odometria
 - ros_topic_name: "tb2/odom"
   gz_topic_name: "tb2/odom"
   ros_type_name: "nav_msgs/msg/Odometry"
   gz_type_name: "gz.msgs.Odometry"
-  direction: GZ_TO_ROS
-  lazy: false
-
-# TF do DiffDrive — publica em /tb2/tf (namespaceado)
-- ros_topic_name: "tb2/tf"
-  gz_topic_name: "tb2/tf"
-  ros_type_name: "tf2_msgs/msg/TFMessage"
-  gz_type_name: "gz.msgs.Pose_V"
   direction: GZ_TO_ROS
   lazy: false
 
