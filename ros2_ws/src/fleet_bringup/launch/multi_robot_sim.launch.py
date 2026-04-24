@@ -17,6 +17,7 @@ Uso:
 """
 import os
 import tempfile
+import yaml
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
@@ -296,9 +297,10 @@ def _robot_nodes(robot_id: str, x: float, y: float,
                     'use_sim_time': True,
                 }],
             ),
-            # LifecycleNode direto com namespace='' — PushROSNamespace aplica 'tb1/'.
-            # Garante que o ParameterFile carregue a seção 'slam_toolbox:' do YAML
-            # para o nó correto (/tb1/slam_toolbox).
+            # LifecycleNode com parâmetros lidos diretamente do YAML via dict.
+            # ParameterFile não aplica a seção 'slam_toolbox:' a '/tb1/slam_toolbox'
+            # porque a chave sem namespace só bate com '/slam_toolbox' (root).
+            # Leitura manual garante que todos os parâmetros sejam carregados.
             LifecycleNode(
                 package='slam_toolbox',
                 executable='async_slam_toolbox_node',
@@ -306,7 +308,9 @@ def _robot_nodes(robot_id: str, x: float, y: float,
                 namespace='',
                 output='screen',
                 parameters=[
-                    ParameterFile(nav2_yaml, allow_substs=True),
+                    yaml.safe_load(open(nav2_yaml))
+                    .get('slam_toolbox', {})
+                    .get('ros__parameters', {}),
                     {'use_sim_time': True},
                 ],
             ),
