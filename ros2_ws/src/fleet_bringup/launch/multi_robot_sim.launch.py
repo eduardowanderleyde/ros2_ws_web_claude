@@ -276,23 +276,21 @@ def _robot_nodes(robot_id: str, x: float, y: float,
     # 5. SLAM Toolbox assíncrono — inicia em period=7s, ANTES do scan_bridge (period=9s).
     #    Dá 2s para o buffer TF se popular com dados do tf_bridge (period=6s) antes
     #    do primeiro scan chegar, resolvendo o "queue is full" no startup.
+    # LifecycleNode dentro de GroupAction para que SetRemap se aplique ao tf2 listener.
+    # SetRemap(src='/tf', dst='tf') + PushROSNamespace('tb1') → /tf remapeado para /tb1/tf.
+    # Node-level remappings não funcionam para tf2_ros::TransformListener (usa path absoluto).
+    # Parâmetros passados via yaml.safe_load dict para contornar namespace mismatch do YAML.
     slam_node = LifecycleNode(
         package='slam_toolbox',
         executable='async_slam_toolbox_node',
         name='slam_toolbox',
-        namespace=robot_id,
+        namespace='',
         output='screen',
         parameters=[
             yaml.safe_load(open(nav2_yaml))
             .get('slam_toolbox', {})
             .get('ros__parameters', {}),
             {'use_sim_time': True},
-        ],
-        remappings=[
-            ('scan', f'/{robot_id}/scan'),
-            ('/tf', f'/{robot_id}/tf'),
-            ('/tf_static', f'/{robot_id}/tf_static'),
-            ('map', f'/{robot_id}/map'),
         ],
     )
     slam_configure = EmitEvent(
@@ -319,6 +317,10 @@ def _robot_nodes(robot_id: str, x: float, y: float,
             GroupAction(actions=[
                 SetParameter('use_sim_time', True),
                 PushROSNamespace(robot_id),
+                SetRemap(src='/tf',        dst='tf'),
+                SetRemap(src='/tf_static', dst='tf_static'),
+                SetRemap(src='/scan',      dst=f'/{robot_id}/scan'),
+                SetRemap(src='/map',       dst='map'),
                 Node(
                     package='nav2_map_server',
                     executable='map_saver_server',
@@ -336,8 +338,8 @@ def _robot_nodes(robot_id: str, x: float, y: float,
                         'use_sim_time': True,
                     }],
                 ),
+                slam_node,
             ]),
-            slam_node,
             slam_configure,
             slam_activate,
         ],
