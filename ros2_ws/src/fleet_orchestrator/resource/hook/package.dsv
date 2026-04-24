@@ -1,0 +1,4 @@
+source;share/fleet_orchestrator/hook/ament_prefix_path.dsv
+source;share/fleet_orchestrator/hook/ament_prefix_path.sh
+source;share/fleet_orchestrator/hook/pythonpath.dsv
+source;share/fleet_orchestrator/hook/pythonpath.sh

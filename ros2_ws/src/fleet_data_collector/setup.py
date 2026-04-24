@@ -1,4 +1,6 @@
 from setuptools import setup
+from glob import glob
+import os
 
 package_name = 'fleet_data_collector'
 
@@ -8,7 +10,9 @@ setup(
     packages=[package_name],
     data_files=[
         ('share/ament_index/resource_index/packages', ['resource/' + package_name]),
-        ('share/' + package_name, ['package.xml']),
+        ('share/' + package_name, ['package.xml', 'resource/package.dsv']),
+        (os.path.join('share', package_name, 'hook'),
+         glob('resource/hook/*.sh') + glob('resource/hook/*.dsv')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
