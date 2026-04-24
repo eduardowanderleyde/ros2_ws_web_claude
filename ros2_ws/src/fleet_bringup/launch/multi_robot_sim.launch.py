@@ -158,9 +158,9 @@ def _robot_nodes(robot_id: str, x: float, y: float,
         )],
     )
 
-    # 2. Bridge misto Gz ↔ ROS — odom, cmd_vel, imu, scan
-    #    tf e joint_states são isolados em processos dedicados abaixo para evitar
-    #    TF_OLD_DATA causado por contenção de threads no bridge compartilhado.
+    # 2. Bridge misto Gz ↔ ROS — odom, cmd_vel, imu (sem scan)
+    #    tf e joint_states são isolados em processos dedicados abaixo.
+    #    scan é isolado em scan_bridge abaixo (inicia depois do SLAM).
     bridge = TimerAction(
         period=6.0,
         actions=[Node(
@@ -168,6 +168,24 @@ def _robot_nodes(robot_id: str, x: float, y: float,
             executable='parameter_bridge',
             name=f'bridge_{robot_id}',
             arguments=['--ros-args', '-p', f'config_file:={bridge_yaml}'],
+            output='screen',
+        )],
+    )
+
+    # 2d. Bridge dedicado para scan — inicia em period=9s, DEPOIS do SLAM (period=7s).
+    #     Garante que o buffer TF do SLAM esteja populado antes do primeiro scan chegar,
+    #     evitando o "queue is full" infinito causado por scan mais antigo que o TF disponível.
+    scan_bridge = TimerAction(
+        period=9.0,
+        actions=[Node(
+            package='ros_gz_bridge',
+            executable='parameter_bridge',
+            name=f'scan_bridge_{robot_id}',
+            arguments=[
+                f'{robot_id}/scan'
+                f'@sensor_msgs/msg/LaserScan'
+                f'[gz.msgs.LaserScan',
+            ],
             output='screen',
         )],
     )
@@ -249,11 +267,11 @@ def _robot_nodes(robot_id: str, x: float, y: float,
         ],
     )
 
-    # 5. SLAM Toolbox assíncrono — lançado separadamente para não depender do
-    #    bringup_launch.py→slam_launch.py→online_sync_launch.py que força modo síncrono.
-    #    GroupAction com PushROSNamespace isola scan/tf/map no namespace de cada robô.
+    # 5. SLAM Toolbox assíncrono — inicia em period=7s, ANTES do scan_bridge (period=9s).
+    #    Dá 2s para o buffer TF se popular com dados do tf_bridge (period=6s) antes
+    #    do primeiro scan chegar, resolvendo o "queue is full" no startup.
     slam = TimerAction(
-        period=12.0,
+        period=7.0,
         actions=[GroupAction(actions=[
             SetParameter('use_sim_time', True),
             PushROSNamespace(robot_id),
@@ -290,7 +308,7 @@ def _robot_nodes(robot_id: str, x: float, y: float,
         ])],
     )
 
-    return [spawn, bridge, tf_bridge, js_bridge, rsp, nav2, slam]
+    return [spawn, bridge, tf_bridge, js_bridge, scan_bridge, rsp, nav2, slam]
 
 
 # ---------------------------------------------------------------------------

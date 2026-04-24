@@ -25,10 +25,6 @@
   direction: GZ_TO_ROS
   lazy: false
 
-# LiDAR
-- ros_topic_name: "tb1/scan"
-  gz_topic_name: "tb1/scan"
-  ros_type_name: "sensor_msgs/msg/LaserScan"
-  gz_type_name: "gz.msgs.LaserScan"
-  direction: GZ_TO_ROS
-  lazy: false
+# LiDAR — movido para scan_bridge_tb1 dedicado em multi_robot_sim.launch.py
+# Inicia DEPOIS do SLAM (period=9s) para garantir que o buffer TF esteja populado
+# antes do primeiro scan chegar ao SLAM.
