@@ -31,7 +31,7 @@ from launch.actions import (
 from launch.conditions import IfCondition, UnlessCondition
 from launch.substitutions import LaunchConfiguration
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch_ros.actions import Node, PushROSNamespace, SetParameter, SetRemap
+from launch_ros.actions import LifecycleNode, Node, PushROSNamespace, SetParameter, SetRemap
 from launch_ros.parameter_descriptions import ParameterFile
 
 
@@ -292,18 +292,22 @@ def _robot_nodes(robot_id: str, x: float, y: float,
                 output='screen',
                 parameters=[{
                     'autostart': True,
-                    'node_names': ['map_saver'],
+                    'node_names': ['slam_toolbox', 'map_saver'],
                     'use_sim_time': True,
                 }],
             ),
-            IncludeLaunchDescription(
-                PythonLaunchDescriptionSource(
-                    os.path.join(slam_toolbox_dir, 'launch', 'online_async_launch.py')
-                ),
-                launch_arguments={
-                    'use_sim_time': 'true',
-                    'slam_params_file': nav2_yaml,
-                }.items(),
+            # LifecycleNode direto: evita o namespace='' hardcoded do online_async_launch.py
+            # que impedia o YAML de ser carregado (chave 'slam_toolbox:' não batia com
+            # '/tb1/slam_toolbox').  Parâmetros passados explicitamente aqui.
+            LifecycleNode(
+                package='slam_toolbox',
+                executable='async_slam_toolbox_node',
+                name='slam_toolbox',
+                output='screen',
+                parameters=[
+                    ParameterFile(nav2_yaml, allow_substs=True),
+                    {'use_sim_time': True},
+                ],
             ),
         ])],
     )
