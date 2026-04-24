@@ -290,8 +290,8 @@ def _robot_nodes(robot_id: str, x: float, y: float,
         ],
         remappings=[
             ('scan', f'/{robot_id}/scan'),
-            ('tf', f'/{robot_id}/tf'),
-            ('tf_static', f'/{robot_id}/tf_static'),
+            ('/tf', f'/{robot_id}/tf'),
+            ('/tf_static', f'/{robot_id}/tf_static'),
             ('map', f'/{robot_id}/map'),
         ],
     )
