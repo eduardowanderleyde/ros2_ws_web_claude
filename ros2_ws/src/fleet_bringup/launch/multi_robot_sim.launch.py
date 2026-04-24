@@ -87,6 +87,11 @@ def _make_robot_sdf(robot_id: str) -> str:
         '<tf_topic>/tf</tf_topic>',
         f'<tf_topic>/{robot_id}/tf</tf_topic>',
     )
+    # DiffDrive cmd_vel input — deve ser /{robot_id}/cmd_vel para cada robô
+    content = content.replace(
+        '<topic>cmd_vel</topic>',
+        f'<topic>/{robot_id}/cmd_vel</topic>',
+    )
     # Sensor topics (lidar, imu) — use replace_all=False since there's one each
     content = content.replace(
         '<topic>scan</topic>',
