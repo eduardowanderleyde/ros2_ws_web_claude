@@ -265,7 +265,8 @@ def _build_cmd(cfg: dict) -> list[str]:
     if cmd == "record":
         pts = cfg.get("points", [])
         if pts:
-            args += ["--points", ";".join(f"{p[0]},{p[1]},{p[2] if len(p)>2 else 0}" for p in pts)]
+            pts_str = ";".join(f"{p[0]},{p[1]},{p[2] if len(p)>2 else 0}" for p in pts)
+            args += [f"--points={pts_str}"]
     elif cmd == "replay":
         rts = cfg.get("return_to_start")
         if rts:
