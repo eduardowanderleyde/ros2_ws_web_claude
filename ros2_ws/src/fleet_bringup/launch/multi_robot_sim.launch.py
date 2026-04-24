@@ -296,13 +296,14 @@ def _robot_nodes(robot_id: str, x: float, y: float,
                     'use_sim_time': True,
                 }],
             ),
-            # LifecycleNode direto: evita o namespace='' hardcoded do online_async_launch.py
-            # que impedia o YAML de ser carregado (chave 'slam_toolbox:' não batia com
-            # '/tb1/slam_toolbox').  Parâmetros passados explicitamente aqui.
+            # LifecycleNode direto com namespace='' — PushROSNamespace aplica 'tb1/'.
+            # Garante que o ParameterFile carregue a seção 'slam_toolbox:' do YAML
+            # para o nó correto (/tb1/slam_toolbox).
             LifecycleNode(
                 package='slam_toolbox',
                 executable='async_slam_toolbox_node',
                 name='slam_toolbox',
+                namespace='',
                 output='screen',
                 parameters=[
                     ParameterFile(nav2_yaml, allow_substs=True),
