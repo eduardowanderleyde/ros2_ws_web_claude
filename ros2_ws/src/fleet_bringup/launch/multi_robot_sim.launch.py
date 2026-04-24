@@ -24,16 +24,21 @@ from launch import LaunchDescription
 from launch.actions import (
     AppendEnvironmentVariable,
     DeclareLaunchArgument,
+    EmitEvent,
     GroupAction,
     IncludeLaunchDescription,
     OpaqueFunction,
+    RegisterEventHandler,
     TimerAction,
 )
 from launch.conditions import IfCondition, UnlessCondition
 from launch.substitutions import LaunchConfiguration
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.actions import LifecycleNode, Node, PushROSNamespace, SetParameter, SetRemap
+from launch_ros.event_handlers import OnStateTransition
+from launch_ros.events.lifecycle import ChangeState
 from launch_ros.parameter_descriptions import ParameterFile
+from lifecycle_msgs.msg import Transition
 
 
 # ---------------------------------------------------------------------------
@@ -271,50 +276,71 @@ def _robot_nodes(robot_id: str, x: float, y: float,
     # 5. SLAM Toolbox assíncrono — inicia em period=7s, ANTES do scan_bridge (period=9s).
     #    Dá 2s para o buffer TF se popular com dados do tf_bridge (period=6s) antes
     #    do primeiro scan chegar, resolvendo o "queue is full" no startup.
+    slam_node = LifecycleNode(
+        package='slam_toolbox',
+        executable='async_slam_toolbox_node',
+        name='slam_toolbox',
+        namespace=robot_id,
+        output='screen',
+        parameters=[
+            yaml.safe_load(open(nav2_yaml))
+            .get('slam_toolbox', {})
+            .get('ros__parameters', {}),
+            {'use_sim_time': True},
+        ],
+        remappings=[
+            ('scan', f'/{robot_id}/scan'),
+            ('tf', f'/{robot_id}/tf'),
+            ('tf_static', f'/{robot_id}/tf_static'),
+            ('map', f'/{robot_id}/map'),
+        ],
+    )
+    slam_configure = EmitEvent(
+        event=ChangeState(
+            lifecycle_node_matcher=lambda node: node is slam_node,
+            transition_id=Transition.TRANSITION_CONFIGURE,
+        )
+    )
+    slam_activate = RegisterEventHandler(
+        OnStateTransition(
+            target_lifecycle_node=slam_node,
+            start_state='configuring',
+            goal_state='inactive',
+            entities=[EmitEvent(event=ChangeState(
+                lifecycle_node_matcher=lambda node: node is slam_node,
+                transition_id=Transition.TRANSITION_ACTIVATE,
+            ))],
+        )
+    )
+
     slam = TimerAction(
         period=7.0,
-        actions=[GroupAction(actions=[
-            SetParameter('use_sim_time', True),
-            PushROSNamespace(robot_id),
-            SetRemap(src='/scan', dst='scan'),
-            SetRemap(src='/tf', dst='tf'),
-            SetRemap(src='/tf_static', dst='tf_static'),
-            SetRemap(src='/map', dst='map'),
-            Node(
-                package='nav2_map_server',
-                executable='map_saver_server',
-                output='screen',
-                parameters=[ParameterFile(nav2_yaml, allow_substs=True)],
-            ),
-            Node(
-                package='nav2_lifecycle_manager',
-                executable='lifecycle_manager',
-                name='lifecycle_manager_slam',
-                output='screen',
-                parameters=[{
-                    'autostart': True,
-                    'node_names': ['slam_toolbox', 'map_saver'],
-                    'use_sim_time': True,
-                }],
-            ),
-            # LifecycleNode com parâmetros lidos diretamente do YAML via dict.
-            # ParameterFile não aplica a seção 'slam_toolbox:' a '/tb1/slam_toolbox'
-            # porque a chave sem namespace só bate com '/slam_toolbox' (root).
-            # Leitura manual garante que todos os parâmetros sejam carregados.
-            LifecycleNode(
-                package='slam_toolbox',
-                executable='async_slam_toolbox_node',
-                name='slam_toolbox',
-                namespace='',
-                output='screen',
-                parameters=[
-                    yaml.safe_load(open(nav2_yaml))
-                    .get('slam_toolbox', {})
-                    .get('ros__parameters', {}),
-                    {'use_sim_time': True},
-                ],
-            ),
-        ])],
+        actions=[
+            GroupAction(actions=[
+                SetParameter('use_sim_time', True),
+                PushROSNamespace(robot_id),
+                Node(
+                    package='nav2_map_server',
+                    executable='map_saver_server',
+                    output='screen',
+                    parameters=[ParameterFile(nav2_yaml, allow_substs=True)],
+                ),
+                Node(
+                    package='nav2_lifecycle_manager',
+                    executable='lifecycle_manager',
+                    name='lifecycle_manager_slam',
+                    output='screen',
+                    parameters=[{
+                        'autostart': True,
+                        'node_names': ['map_saver'],
+                        'use_sim_time': True,
+                    }],
+                ),
+            ]),
+            slam_node,
+            slam_configure,
+            slam_activate,
+        ],
     )
 
     return [spawn, bridge, tf_bridge, js_bridge, scan_bridge, rsp, nav2, slam]
