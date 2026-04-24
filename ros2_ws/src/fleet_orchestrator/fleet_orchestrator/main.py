@@ -18,7 +18,9 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.duration import Duration
 from rclpy.node import Node
 from rclpy.time import Time
+from tf2_msgs.msg import TFMessage
 from tf2_ros import Buffer, TransformListener, TransformException
+from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy
 
 from fleet_msgs.msg import FleetStatus, RobotState
 from fleet_msgs.srv import (
@@ -96,8 +98,30 @@ class FleetOrchestrator(Node):
         self._state: Dict[str, RobotRuntime] = {rid: RobotRuntime() for rid in self._robots}
 
         self._cb_group = ReentrantCallbackGroup()
+        # Buffer global para single-robot (robot_id="") — usa /tf padrão
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
+
+        # Buffers por robô para multi-robot: SLAM publica em /{rid}/tf, não em /tf
+        self._tf_buffers: Dict[str, Buffer] = {'': self.tf_buffer}
+        _static_qos = QoSProfile(
+            depth=100,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            reliability=ReliabilityPolicy.RELIABLE,
+        )
+        for rid in [r for r in self._robots if r != '']:
+            buf = Buffer()
+            self._tf_buffers[rid] = buf
+            self.create_subscription(
+                TFMessage, f'/{rid}/tf',
+                lambda msg, b=buf: [b.set_transform(t, 'default_authority') for t in msg.transforms],
+                100,
+            )
+            self.create_subscription(
+                TFMessage, f'/{rid}/tf_static',
+                lambda msg, b=buf: [b.set_transform_static(t, 'default_authority') for t in msg.transforms],
+                _static_qos,
+            )
 
         self._nav_clients: Dict[str, ActionClient] = {}
         self._wp_clients: Dict[str, ActionClient] = {}
@@ -177,8 +201,9 @@ class FleetOrchestrator(Node):
 
     def _get_pose(self, robot_id: str) -> Optional[PoseStamped]:
         map_f, base_f = self._map_base(robot_id)
+        buf = self._tf_buffers.get(robot_id, self.tf_buffer)
         try:
-            transform = self.tf_buffer.lookup_transform(
+            transform = buf.lookup_transform(
                 map_f, base_f, Time(), timeout=Duration(seconds=0.5)
             )
         except TransformException as ex:
