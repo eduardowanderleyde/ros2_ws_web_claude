@@ -11,32 +11,302 @@ const ROBOT_PROFILES = [
 const ALL_TOPICS = ['scan', 'odom', 'imu', 'pose']
 
 const DEFAULT_CFG = {
-  command:       'record',
-  robot:         'default',
-  route:         'percurso_initial',
-  collect:       true,
-  topics:        ['scan', 'odom', 'imu', 'pose'],
-  initial_pose:  [0, 0, 0],
-  points:        [[0.5, 0.0, 0.0], [1.0, 0.0, 0.0]],
+  command:         'record',
+  robot:           'default',
+  route:           'percurso_initial',
+  collect:         true,
+  topics:          ['scan', 'odom', 'imu', 'pose'],
+  initial_pose:    [0, 0, 0],
+  points:          [[0.5, 0.0, 0.0], [1.0, 0.0, 0.0]],
   return_to_start: [0, 0, 0],
 }
 
-// ── Helpers de estilo ────────────────────────────────────────────────────────
+// ── Estilos base ─────────────────────────────────────────────────────────────
 const S = {
-  label:   { fontSize: '0.72rem', color: '#8b92a8', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.3rem', display: 'block' },
-  input:   { background: '#0d0f14', border: '1px solid #2a3142', borderRadius: '6px', color: '#e6e9ef', padding: '0.4rem 0.6rem', fontSize: '0.85rem', outline: 'none', fontFamily: 'monospace', width: '100%', boxSizing: 'border-box' },
-  numInput:{ background: '#0d0f14', border: '1px solid #2a3142', borderRadius: '6px', color: '#e6e9ef', padding: '0.4rem 0.5rem', fontSize: '0.82rem', outline: 'none', fontFamily: 'monospace', width: '70px', textAlign: 'center' },
-  select:  { background: '#0d0f14', border: '1px solid #2a3142', borderRadius: '6px', color: '#e6e9ef', padding: '0.4rem 0.6rem', fontSize: '0.85rem', outline: 'none', width: '100%', boxSizing: 'border-box' },
-  section: { background: '#161a22', border: '1px solid #2a3142', borderRadius: '8px', padding: '0.85rem 1rem', display: 'flex', flexDirection: 'column', gap: '0.65rem' },
-  row:     { display: 'flex', gap: '0.75rem', alignItems: 'flex-start' },
-  field:   { display: 'flex', flexDirection: 'column', flex: 1 },
+  label:    { fontSize: '0.72rem', color: '#8b92a8', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.3rem', display: 'block' },
+  input:    { background: '#0d0f14', border: '1px solid #2a3142', borderRadius: '6px', color: '#e6e9ef', padding: '0.4rem 0.6rem', fontSize: '0.85rem', outline: 'none', fontFamily: 'monospace', width: '100%', boxSizing: 'border-box' },
+  numInput: { background: '#0d0f14', border: '1px solid #2a3142', borderRadius: '6px', color: '#e6e9ef', padding: '0.4rem 0.5rem', fontSize: '0.82rem', outline: 'none', fontFamily: 'monospace', width: '70px', textAlign: 'center' },
+  select:   { background: '#0d0f14', border: '1px solid #2a3142', borderRadius: '6px', color: '#e6e9ef', padding: '0.4rem 0.6rem', fontSize: '0.85rem', outline: 'none', width: '100%', boxSizing: 'border-box' },
+  section:  { background: '#161a22', border: '1px solid #2a3142', borderRadius: '8px', padding: '0.85rem 1rem', display: 'flex', flexDirection: 'column', gap: '0.65rem' },
+  row:      { display: 'flex', gap: '0.75rem', alignItems: 'flex-start' },
+  field:    { display: 'flex', flexDirection: 'column', flex: 1 },
 }
 
 function btn(bg, color, disabled = false) {
   return { background: bg, color, border: `1px solid ${color}`, borderRadius: '8px', padding: '0.45rem 0.9rem', fontSize: '0.85rem', fontWeight: 600, cursor: disabled ? 'not-allowed' : 'pointer', opacity: disabled ? 0.55 : 1, fontFamily: 'inherit' }
 }
 
-// ── Componente: toggle Record / Replay ───────────────────────────────────────
+// ── MapView ───────────────────────────────────────────────────────────────────
+function MapView({ robotPose, waypoints, onAddWaypoint, onNavigateTo }) {
+  const canvasRef  = useRef(null)
+  const imgRef     = useRef(null)      // Image object reutilizável
+  const mapMeta    = useRef(null)      // {resolution, origin_x, origin_y, width, height}
+  const scaleRef   = useRef(1)
+  const panRef     = useRef({ x: 0, y: 0 })
+  const dragRef    = useRef(null)
+  const [clickMode, setClickMode] = useState('waypoint') // 'waypoint' | 'navigate'
+  const [mapOk, setMapOk]         = useState(false)
+
+  // Converte coords mundo → canvas
+  const worldToCanvas = useCallback((wx, wy) => {
+    const m = mapMeta.current
+    if (!m) return null
+    const px = (wx - m.origin_x) / m.resolution
+    const py = m.height - (wy - m.origin_y) / m.resolution
+    return {
+      x: px * scaleRef.current + panRef.current.x,
+      y: py * scaleRef.current + panRef.current.y,
+    }
+  }, [])
+
+  // Converte canvas → coords mundo
+  const canvasToWorld = useCallback((cx, cy) => {
+    const m = mapMeta.current
+    if (!m) return null
+    const px = (cx - panRef.current.x) / scaleRef.current
+    const py = (cy - panRef.current.y) / scaleRef.current
+    return {
+      x: parseFloat((m.origin_x + px * m.resolution).toFixed(3)),
+      y: parseFloat((m.origin_y + (m.height - py) * m.resolution).toFixed(3)),
+    }
+  }, [])
+
+  // Desenha tudo no canvas
+  const draw = useCallback(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const ctx = canvas.getContext('2d')
+    const W = canvas.width, H = canvas.height
+    ctx.clearRect(0, 0, W, H)
+
+    // Fundo
+    ctx.fillStyle = '#0d0f14'
+    ctx.fillRect(0, 0, W, H)
+
+    // Mapa PNG
+    if (imgRef.current && imgRef.current.complete && mapMeta.current) {
+      const m = mapMeta.current
+      ctx.imageSmoothingEnabled = false
+      ctx.drawImage(
+        imgRef.current,
+        panRef.current.x, panRef.current.y,
+        m.width * scaleRef.current,
+        m.height * scaleRef.current,
+      )
+    }
+
+    if (!mapMeta.current) {
+      ctx.fillStyle = '#4b5563'
+      ctx.font = '14px system-ui'
+      ctx.textAlign = 'center'
+      ctx.fillText('Aguardando mapa do SLAM…', W / 2, H / 2)
+      return
+    }
+
+    // Waypoints
+    waypoints.forEach((wp, i) => {
+      const c = worldToCanvas(wp[0], wp[1])
+      if (!c) return
+      ctx.beginPath()
+      ctx.arc(c.x, c.y, 9, 0, Math.PI * 2)
+      ctx.fillStyle = 'rgba(99,102,241,0.85)'
+      ctx.fill()
+      ctx.strokeStyle = '#a5b4fc'
+      ctx.lineWidth = 2
+      ctx.stroke()
+      ctx.fillStyle = '#fff'
+      ctx.font = 'bold 10px monospace'
+      ctx.textAlign = 'center'
+      ctx.textBaseline = 'middle'
+      ctx.fillText(String(i + 1), c.x, c.y)
+    })
+
+    // Robô
+    if (robotPose?.valid) {
+      const c = worldToCanvas(robotPose.x, robotPose.y)
+      if (c) {
+        ctx.save()
+        ctx.translate(c.x, c.y)
+        ctx.rotate(-robotPose.yaw)  // canvas Y invertido
+        // Sombra
+        ctx.shadowColor = '#6ee7b7'
+        ctx.shadowBlur = 10
+        // Corpo (círculo)
+        ctx.beginPath()
+        ctx.arc(0, 0, 11, 0, Math.PI * 2)
+        ctx.fillStyle = '#065f46'
+        ctx.fill()
+        ctx.strokeStyle = '#6ee7b7'
+        ctx.lineWidth = 2.5
+        ctx.stroke()
+        // Seta de direcção
+        ctx.beginPath()
+        ctx.moveTo(11, 0)
+        ctx.lineTo(-6, -6)
+        ctx.lineTo(-6, 6)
+        ctx.closePath()
+        ctx.fillStyle = '#6ee7b7'
+        ctx.fill()
+        ctx.restore()
+      }
+    }
+  }, [robotPose, waypoints, worldToCanvas])
+
+  // Busca mapa periodicamente
+  useEffect(() => {
+    let alive = true
+    const fetchMap = async () => {
+      try {
+        const r = await fetch(`${API}/map`)
+        const data = await r.json()
+        if (!alive || !data.available) return
+        mapMeta.current = {
+          resolution: data.resolution,
+          origin_x:   data.origin_x,
+          origin_y:   data.origin_y,
+          width:       data.width,
+          height:      data.height,
+        }
+        if (!imgRef.current) imgRef.current = new Image()
+        const dataUrl = `data:image/png;base64,${data.png_b64}`
+        if (imgRef.current.src !== dataUrl) {
+          imgRef.current.src = dataUrl
+          imgRef.current.onload = () => {
+            // Ajusta escala inicial para caber no canvas
+            const canvas = canvasRef.current
+            if (!canvas) return
+            const sx = canvas.width  / data.width
+            const sy = canvas.height / data.height
+            const s  = Math.min(sx, sy) * 0.92
+            scaleRef.current = s
+            panRef.current = {
+              x: (canvas.width  - data.width  * s) / 2,
+              y: (canvas.height - data.height * s) / 2,
+            }
+            setMapOk(true)
+            draw()
+          }
+        } else {
+          draw()
+        }
+      } catch { /* backend offline */ }
+    }
+    fetchMap()
+    const t = setInterval(fetchMap, 1500)
+    return () => { alive = false; clearInterval(t) }
+  }, [draw])
+
+  // Redesenha quando pose ou waypoints mudam
+  useEffect(() => { draw() }, [draw, robotPose, waypoints])
+
+  // Redimensiona canvas ao container
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const ro = new ResizeObserver(() => {
+      canvas.width  = canvas.offsetWidth
+      canvas.height = canvas.offsetHeight
+      draw()
+    })
+    ro.observe(canvas)
+    return () => ro.disconnect()
+  }, [draw])
+
+  // Zoom com scroll
+  const onWheel = useCallback(e => {
+    e.preventDefault()
+    const canvas = canvasRef.current
+    const rect   = canvas.getBoundingClientRect()
+    const mx = e.clientX - rect.left
+    const my = e.clientY - rect.top
+    const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15
+    const newScale = Math.max(0.2, Math.min(scaleRef.current * factor, 50))
+    panRef.current = {
+      x: mx - (mx - panRef.current.x) * (newScale / scaleRef.current),
+      y: my - (my - panRef.current.y) * (newScale / scaleRef.current),
+    }
+    scaleRef.current = newScale
+    draw()
+  }, [draw])
+
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    canvas.addEventListener('wheel', onWheel, { passive: false })
+    return () => canvas.removeEventListener('wheel', onWheel)
+  }, [onWheel])
+
+  // Pan com drag
+  const onMouseDown = e => {
+    if (e.button === 1 || e.altKey) {
+      dragRef.current = { x: e.clientX - panRef.current.x, y: e.clientY - panRef.current.y }
+    }
+  }
+  const onMouseMove = e => {
+    if (!dragRef.current) return
+    panRef.current = { x: e.clientX - dragRef.current.x, y: e.clientY - dragRef.current.y }
+    draw()
+  }
+  const onMouseUp = () => { dragRef.current = null }
+
+  // Clique → acção
+  const onClick = e => {
+    if (!mapMeta.current || dragRef.current) return
+    const rect = canvasRef.current.getBoundingClientRect()
+    const cx = e.clientX - rect.left
+    const cy = e.clientY - rect.top
+    const world = canvasToWorld(cx, cy)
+    if (!world) return
+    if (clickMode === 'waypoint') onAddWaypoint(world.x, world.y)
+    else onNavigateTo(world.x, world.y)
+  }
+
+  const modeBtn = (mode, label, color) => (
+    <button onClick={() => setClickMode(mode)}
+      style={{ ...btn(clickMode === mode ? '#1a1f2e' : '#0d0f14', color, false), fontSize: '0.75rem', padding: '0.3rem 0.7rem', borderWidth: clickMode === mode ? 2 : 1 }}>
+      {label}
+    </button>
+  )
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', gap: '0.5rem' }}>
+      {/* Barra de ferramentas do mapa */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', flexShrink: 0 }}>
+        <span style={{ fontSize: '0.72rem', color: '#8b92a8', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+          Clique no mapa:
+        </span>
+        {modeBtn('waypoint',  '+ Waypoint',  '#6366f1')}
+        {modeBtn('navigate',  '→ Ir agora',  '#6ee7b7')}
+        <span style={{ marginLeft: 'auto', fontSize: '0.7rem', color: '#4b5563', fontFamily: 'monospace' }}>
+          {mapOk ? 'scroll=zoom  alt+drag=pan' : ''}
+        </span>
+        {!mapOk && (
+          <span style={{ fontSize: '0.72rem', color: '#fbbf24' }}>⏳ aguardando SLAM…</span>
+        )}
+      </div>
+
+      {/* Canvas do mapa */}
+      <canvas
+        ref={canvasRef}
+        onClick={onClick}
+        onMouseDown={onMouseDown}
+        onMouseMove={onMouseMove}
+        onMouseUp={onMouseUp}
+        onMouseLeave={onMouseUp}
+        style={{
+          flex: 1,
+          width: '100%',
+          borderRadius: '10px',
+          border: '1px solid #2a3142',
+          cursor: clickMode === 'navigate' ? 'crosshair' : 'cell',
+          display: 'block',
+        }}
+      />
+    </div>
+  )
+}
+
+// ── Toggle Record/Replay ──────────────────────────────────────────────────────
 function CmdToggle({ value, onChange }) {
   const base = { padding: '0.4rem 1.2rem', fontSize: '0.85rem', fontWeight: 600, border: 'none', cursor: 'pointer', fontFamily: 'inherit' }
   return (
@@ -51,26 +321,21 @@ function CmdToggle({ value, onChange }) {
   )
 }
 
-// ── Componente: lista de waypoints ───────────────────────────────────────────
+// ── Lista de waypoints ────────────────────────────────────────────────────────
 function WaypointList({ points, onChange }) {
-  const update = (i, j, val) => {
-    const next = points.map((p, pi) => pi === i ? p.map((v, vi) => vi === j ? parseFloat(val) || 0 : v) : p)
-    onChange(next)
-  }
-  const add    = () => onChange([...points, [0, 0, 0]])
-  const remove = i  => onChange(points.filter((_, pi) => pi !== i))
+  const update = (i, j, val) => onChange(points.map((p, pi) => pi === i ? p.map((v, vi) => vi === j ? parseFloat(val) || 0 : v) : p))
+  const add    = ()  => onChange([...points, [0, 0, 0]])
+  const remove = i   => onChange(points.filter((_, pi) => pi !== i))
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
       {points.map((p, i) => (
         <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-          <span style={{ fontSize: '0.75rem', color: '#4b5563', width: '20px', textAlign: 'right' }}>#{i + 1}</span>
+          <span style={{ fontSize: '0.75rem', color: '#6366f1', width: '20px', textAlign: 'right', fontWeight: 700 }}>#{i + 1}</span>
           {['x', 'y', 'yaw'].map((lbl, j) => (
             <div key={lbl} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.1rem' }}>
               <span style={{ fontSize: '0.65rem', color: '#4b5563' }}>{lbl}</span>
-              <input type="number" step="0.1" value={p[j]}
-                onChange={e => update(i, j, e.target.value)}
-                style={S.numInput} />
+              <input type="number" step="0.1" value={p[j]} onChange={e => update(i, j, e.target.value)} style={S.numInput} />
             </div>
           ))}
           <button onClick={() => remove(i)} style={{ ...btn('#3a1a1a', '#f87171'), padding: '0.2rem 0.5rem', fontSize: '0.8rem', marginTop: '0.9rem' }}>✕</button>
@@ -83,11 +348,9 @@ function WaypointList({ points, onChange }) {
   )
 }
 
-// ── Componente: inputs XYYaw ─────────────────────────────────────────────────
+// ── XYYaw ─────────────────────────────────────────────────────────────────────
 function XYYaw({ value, onChange, label }) {
-  const update = (i, val) => {
-    const next = [...value]; next[i] = parseFloat(val) || 0; onChange(next)
-  }
+  const update = (i, val) => { const next = [...value]; next[i] = parseFloat(val) || 0; onChange(next) }
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '0.3rem' }}>
       {label && <span style={S.label}>{label}</span>}
@@ -95,9 +358,7 @@ function XYYaw({ value, onChange, label }) {
         {['x', 'y', 'yaw'].map((lbl, i) => (
           <div key={lbl} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.1rem' }}>
             <span style={{ fontSize: '0.65rem', color: '#4b5563' }}>{lbl}</span>
-            <input type="number" step="0.1" value={value[i]}
-              onChange={e => update(i, e.target.value)}
-              style={S.numInput} />
+            <input type="number" step="0.1" value={value[i]} onChange={e => update(i, e.target.value)} style={S.numInput} />
           </div>
         ))}
       </div>
@@ -106,8 +367,13 @@ function XYYaw({ value, onChange, label }) {
 }
 
 // ── Formulário de configuração ────────────────────────────────────────────────
-function ConfigForm({ cfg, onChange, currentPose }) {
+function ConfigForm({ cfg, onChange, currentPose, onAddWaypoint }) {
   const set = (key, val) => onChange({ ...cfg, [key]: val })
+
+  const toggleTopic = t => {
+    const next = cfg.topics.includes(t) ? cfg.topics.filter(x => x !== t) : [...cfg.topics, t]
+    set('topics', next)
+  }
 
   const usarPoseAtual = () => {
     if (!currentPose?.valid) return
@@ -118,63 +384,48 @@ function ConfigForm({ cfg, onChange, currentPose }) {
     ])
   }
 
-  const toggleTopic = (t) => {
-    const next = cfg.topics.includes(t) ? cfg.topics.filter(x => x !== t) : [...cfg.topics, t]
-    set('topics', next)
-  }
-
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
 
-      {/* Comando */}
+      {/* Comando + Robô + Rota */}
       <div style={S.section}>
         <div style={S.row}>
           <div style={S.field}>
             <span style={S.label}>Comando</span>
             <CmdToggle value={cfg.command} onChange={v => set('command', v)} />
           </div>
-          <div style={S.field}>
+          <div style={{ ...S.field, maxWidth: '110px' }}>
             <span style={S.label}>Robô</span>
             <select value={cfg.robot} onChange={e => set('robot', e.target.value)} style={S.select}>
-              <option value="default">Único (default)</option>
+              <option value="default">único</option>
               <option value="tb1">tb1</option>
               <option value="tb2">tb2</option>
             </select>
           </div>
-          <div style={S.field}>
-            <span style={S.label}>Nome da rota</span>
-            <input value={cfg.route} onChange={e => set('route', e.target.value)}
-              placeholder="percurso1" style={S.input} />
-          </div>
+        </div>
+        <div style={S.field}>
+          <span style={S.label}>Nome da rota</span>
+          <input value={cfg.route} onChange={e => set('route', e.target.value)} placeholder="percurso_initial" style={S.input} />
         </div>
       </div>
 
-      {/* Coleta e tópicos */}
+      {/* Coleta */}
       <div style={S.section}>
-        <div style={S.row}>
-          <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}>
-            <input type="checkbox" checked={cfg.collect} onChange={e => set('collect', e.target.checked)}
-              style={{ accentColor: '#6ee7b7', width: 16, height: 16 }} />
-            <span style={{ fontSize: '0.85rem', color: cfg.collect ? '#6ee7b7' : '#8b92a8', fontWeight: 600 }}>
-              Gravar bag
-            </span>
-          </label>
-        </div>
-
+        <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}>
+          <input type="checkbox" checked={cfg.collect} onChange={e => set('collect', e.target.checked)} style={{ accentColor: '#6ee7b7', width: 16, height: 16 }} />
+          <span style={{ fontSize: '0.85rem', color: cfg.collect ? '#6ee7b7' : '#8b92a8', fontWeight: 600 }}>Gravar bag</span>
+        </label>
         {cfg.collect && (
           <div>
             <span style={S.label}>Tópicos</span>
-            <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
               {ALL_TOPICS.map(t => (
                 <label key={t} style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', cursor: 'pointer',
                   background: cfg.topics.includes(t) ? 'rgba(99,102,241,0.12)' : 'transparent',
                   border: `1px solid ${cfg.topics.includes(t) ? '#6366f1' : '#2a3142'}`,
                   borderRadius: '6px', padding: '0.3rem 0.65rem' }}>
-                  <input type="checkbox" checked={cfg.topics.includes(t)} onChange={() => toggleTopic(t)}
-                    style={{ accentColor: '#6366f1', margin: 0 }} />
-                  <span style={{ fontSize: '0.82rem', color: cfg.topics.includes(t) ? '#e6e9ef' : '#8b92a8', fontFamily: 'monospace' }}>
-                    {t}
-                  </span>
+                  <input type="checkbox" checked={cfg.topics.includes(t)} onChange={() => toggleTopic(t)} style={{ accentColor: '#6366f1', margin: 0 }} />
+                  <span style={{ fontSize: '0.82rem', color: cfg.topics.includes(t) ? '#e6e9ef' : '#8b92a8', fontFamily: 'monospace' }}>{t}</span>
                 </label>
               ))}
             </div>
@@ -184,50 +435,52 @@ function ConfigForm({ cfg, onChange, currentPose }) {
 
       {/* Pose inicial */}
       <div style={S.section}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.1rem' }}>
-          <span style={S.label}>Pose inicial (initialpose)</span>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span style={S.label}>Pose inicial</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
             {currentPose?.valid && (
-              <span style={{ fontSize: '0.72rem', color: '#4b5563', fontFamily: 'monospace' }}>
-                atual: ({currentPose.x.toFixed(2)}, {currentPose.y.toFixed(2)}, {(currentPose.yaw * 180 / Math.PI).toFixed(1)}°)
+              <span style={{ fontSize: '0.7rem', color: '#4b5563', fontFamily: 'monospace' }}>
+                ({currentPose.x.toFixed(2)}, {currentPose.y.toFixed(2)})
               </span>
             )}
             <button onClick={usarPoseAtual} disabled={!currentPose?.valid}
               style={{ ...btn('#161a22', currentPose?.valid ? '#6366f1' : '#2a3142', !currentPose?.valid), fontSize: '0.72rem', padding: '0.2rem 0.55rem' }}>
-              ⊕ Usar pose atual
+              ⊕ Pose atual
             </button>
           </div>
         </div>
         <XYYaw value={cfg.initial_pose} onChange={v => set('initial_pose', v)} />
       </div>
 
-      {/* Waypoints (record) ou Retornar ao início (replay) */}
+      {/* Waypoints / Retorno */}
       <div style={S.section}>
         {cfg.command === 'record' ? (
           <>
-            <span style={S.label}>Waypoints</span>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={S.label}>Waypoints</span>
+              <span style={{ fontSize: '0.7rem', color: '#6366f1' }}>ou clica no mapa</span>
+            </div>
             <WaypointList points={cfg.points} onChange={v => set('points', v)} />
           </>
         ) : (
           <XYYaw label="Retornar ao início antes do replay" value={cfg.return_to_start} onChange={v => set('return_to_start', v)} />
         )}
       </div>
-
     </div>
   )
 }
 
 // ── App principal ─────────────────────────────────────────────────────────────
 export default function App() {
-  const [cfg, setCfg]             = useState(DEFAULT_CFG)
-  const [jobId, setJobId]         = useState(null)
-  const [job, setJob]             = useState(null)
-  const [running, setRunning]     = useState(false)
-  const [error, setError]         = useState(null)
+  const [cfg, setCfg]               = useState(DEFAULT_CFG)
+  const [jobId, setJobId]           = useState(null)
+  const [job, setJob]               = useState(null)
+  const [running, setRunning]       = useState(false)
+  const [error, setError]           = useState(null)
   const [showResult, setShowResult] = useState(false)
-  const [status, setStatus]       = useState({ robots: [], pose: { x: 0, y: 0, yaw: 0, valid: false } })
-  const [resetMsg, setResetMsg]   = useState(null)
-  const [resetting, setResetting] = useState(false)
+  const [status, setStatus]         = useState({ robots: [], pose: { x: 0, y: 0, yaw: 0, valid: false } })
+  const [resetMsg, setResetMsg]     = useState(null)
+  const [resetting, setResetting]   = useState(false)
 
   const [connPanel, setConnPanel]             = useState(false)
   const [selectedProfile, setSelectedProfile] = useState('custom')
@@ -247,15 +500,17 @@ export default function App() {
   const panelRef    = useRef(null)
   const discoverRef = useRef(null)
 
+  // Fecha painéis ao clicar fora
   useEffect(() => {
-    const handler = e => {
+    const h = e => {
       if (panelRef.current && !panelRef.current.contains(e.target))    setConnPanel(false)
       if (discoverRef.current && !discoverRef.current.contains(e.target)) setDiscoverPanel(false)
     }
-    document.addEventListener('mousedown', handler)
-    return () => document.removeEventListener('mousedown', handler)
+    document.addEventListener('mousedown', h)
+    return () => document.removeEventListener('mousedown', h)
   }, [])
 
+  // Polling de status
   useEffect(() => {
     const t = setInterval(() =>
       fetch(`${API}/status`).then(r => r.json()).then(d => d && setStatus(d)).catch(() => {}), 300)
@@ -277,6 +532,16 @@ export default function App() {
   useEffect(() => {
     if (outputRef.current) outputRef.current.scrollTop = outputRef.current.scrollHeight
   }, [job?.lines?.length])
+
+  // Adiciona waypoint vindo do clique no mapa
+  const handleMapAddWaypoint = useCallback((x, y) => {
+    setCfg(prev => ({ ...prev, points: [...prev.points, [x, y, 0]] }))
+  }, [])
+
+  // Navega directamente para ponto clicado no mapa
+  const handleMapNavigateTo = useCallback(async (x, y) => {
+    await fetch(`${API}/go_to_point?x=${x}&y=${y}&yaw=0`, { method: 'POST' }).catch(() => {})
+  }, [])
 
   const connectRobot = async () => {
     const profile = [...ROBOT_PROFILES, ...extraProfiles].find(p => p.id === selectedProfile)
@@ -300,7 +565,7 @@ export default function App() {
       const data = await r.json()
       if (data.error) { setDiscoverError(data.error); return }
       setDiscovered(data.found || [])
-      if (!data.found?.length) setDiscoverError(`Nenhum host encontrado em ${data.subnet_scanned || subnet || '(auto)'}.0/24`)
+      if (!data.found?.length) setDiscoverError(`Nenhum host encontrado em ${data.subnet_scanned || '(auto)'}.0/24`)
     } catch (e) { setDiscoverError(`Erro: ${e.message}`) }
     finally { setDiscovering(false) }
   }
@@ -318,9 +583,9 @@ export default function App() {
 
   const run = async () => {
     setError(null)
-    if (!cfg.route.trim()) { setError('Nome da rota não pode estar vazio.'); return }
-    if (cfg.command === 'record' && cfg.points.length === 0) { setError('Adiciona pelo menos 1 waypoint.'); return }
-    if (cfg.collect && cfg.topics.length === 0) { setError('Seleciona pelo menos 1 tópico.'); return }
+    if (!cfg.route.trim())                             { setError('Nome da rota vazio.'); return }
+    if (cfg.command === 'record' && !cfg.points.length){ setError('Adiciona pelo menos 1 waypoint.'); return }
+    if (cfg.collect && !cfg.topics.length)             { setError('Seleciona pelo menos 1 tópico.'); return }
 
     setRunning(true); setJob(null); setJobId(null)
     const r = await fetch(`${API}/run_config`, {
@@ -366,14 +631,14 @@ export default function App() {
       {/* ── Header ──────────────────────────────────────────────────────────── */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.5rem 1.25rem', borderBottom: '1px solid #2a3142', flexShrink: 0 }}>
         <h1 style={{ margin: 0, fontSize: '1.1rem', color: '#6ee7b7', fontWeight: 700 }}>Fleet UI</h1>
-        <div style={{ display: 'flex', gap: '0', fontSize: '0.78rem', fontFamily: 'monospace', alignItems: 'stretch', background: '#161a22', border: '1px solid #2a3142', borderRadius: '8px', overflow: 'hidden' }}>
+        <div style={{ display: 'flex', fontSize: '0.78rem', fontFamily: 'monospace', alignItems: 'stretch', background: '#161a22', border: '1px solid #2a3142', borderRadius: '8px', overflow: 'hidden' }}>
           {[
-            { label: 'Nav2',  value: nav2Ok ? 'ON' : 'OFF',         color: nav2Ok ? '#6ee7b7' : '#f87171' },
-            { label: 'Nav',   value: robot.nav_state || '—',         color: robot.nav_state === 'navigating' ? '#6ee7b7' : robot.nav_state === 'failed' ? '#f87171' : '#e6e9ef' },
-            { label: 'Coleta',value: robot.collection_on ? 'ON' : 'OFF', color: robot.collection_on ? '#6ee7b7' : '#8b92a8' },
-            { label: 'x',     value: pose.valid ? pose.x.toFixed(3) : '—', color: pose.valid ? '#93c5fd' : '#8b92a8' },
-            { label: 'y',     value: pose.valid ? pose.y.toFixed(3) : '—', color: pose.valid ? '#93c5fd' : '#8b92a8' },
-            { label: 'yaw',   value: pose.valid ? `${deg(pose.yaw)}°` : '—', color: pose.valid ? '#93c5fd' : '#8b92a8' },
+            { label: 'Nav2',   value: nav2Ok ? 'ON' : 'OFF',           color: nav2Ok ? '#6ee7b7' : '#f87171' },
+            { label: 'Nav',    value: robot.nav_state || '—',           color: robot.nav_state === 'navigating' ? '#6ee7b7' : robot.nav_state === 'failed' ? '#f87171' : '#e6e9ef' },
+            { label: 'Coleta', value: robot.collection_on ? 'ON':'OFF', color: robot.collection_on ? '#6ee7b7' : '#8b92a8' },
+            { label: 'x',      value: pose.valid ? pose.x.toFixed(3) : '—', color: pose.valid ? '#93c5fd' : '#8b92a8' },
+            { label: 'y',      value: pose.valid ? pose.y.toFixed(3) : '—', color: pose.valid ? '#93c5fd' : '#8b92a8' },
+            { label: 'yaw',    value: pose.valid ? `${deg(pose.yaw)}°` : '—', color: pose.valid ? '#93c5fd' : '#8b92a8' },
           ].map(({ label, value, color }) => (
             <div key={label} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '0.3rem 0.7rem', borderRight: '1px solid #2a3142' }}>
               <span style={{ fontSize: '0.62rem', color: '#4b5563', textTransform: 'uppercase', letterSpacing: '0.04em' }}>{label}</span>
@@ -387,7 +652,7 @@ export default function App() {
         </div>
       </div>
 
-      {/* ── Barra de conexão ───────────────────────────────────────────────── */}
+      {/* ── Barra de conexão ─────────────────────────────────────────────────── */}
       <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', padding: '0.4rem 1.25rem', borderBottom: '1px solid #2a3142', flexShrink: 0, position: 'relative' }}>
 
         <div ref={panelRef} style={{ position: 'relative' }}>
@@ -397,7 +662,7 @@ export default function App() {
             Conectar robô <span style={{ fontSize: '0.7rem', opacity: 0.7 }}>{connPanel ? '▲' : '▼'}</span>
           </button>
           {connPanel && (
-            <div style={{ position: 'absolute', top: '2.5rem', left: 0, zIndex: 100, background: '#161a22', border: '1px solid #2a3142', borderRadius: '10px', padding: '1rem', width: '340px', boxShadow: '0 8px 32px rgba(0,0,0,0.5)' }}>
+            <div style={{ position: 'absolute', top: '2.5rem', left: 0, zIndex: 100, background: '#161a22', border: '1px solid #2a3142', borderRadius: '10px', padding: '1rem', width: '320px', boxShadow: '0 8px 32px rgba(0,0,0,0.5)' }}>
               <div style={{ fontSize: '0.78rem', color: '#8b92a8', marginBottom: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Selecionar robô</div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginBottom: '1rem' }}>
                 {[...ROBOT_PROFILES, ...extraProfiles].map(p => {
@@ -405,15 +670,14 @@ export default function App() {
                   const isExtra    = !!extraProfiles.find(ep => ep.id === p.id)
                   return (
                     <label key={p.id} onClick={() => setSelectedProfile(p.id)}
-                      style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', padding: '0.6rem 0.85rem', borderRadius: '8px', border: `1px solid ${isSelected ? '#6366f1' : '#2a3142'}`, background: isSelected ? 'rgba(99,102,241,0.1)' : 'transparent', cursor: 'pointer' }}>
-                      <input type="radio" name="robot_profile" checked={isSelected} onChange={() => setSelectedProfile(p.id)} style={{ accentColor: '#6366f1', margin: 0 }} />
+                      style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', padding: '0.5rem 0.85rem', borderRadius: '8px', border: `1px solid ${isSelected ? '#6366f1' : '#2a3142'}`, background: isSelected ? 'rgba(99,102,241,0.1)' : 'transparent', cursor: 'pointer' }}>
+                      <input type="radio" name="rp" checked={isSelected} onChange={() => setSelectedProfile(p.id)} style={{ accentColor: '#6366f1', margin: 0 }} />
                       <div style={{ flex: 1 }}>
                         <div style={{ fontSize: '0.85rem', color: isSelected ? '#e6e9ef' : '#a0aec0', fontWeight: isSelected ? 600 : 400 }}>{p.label}</div>
                         <div style={{ fontSize: '0.72rem', color: '#4b5563', marginTop: '0.1rem' }}>
-                          {isExtra ? `SSH ${p.host} · descoberto` : p.type === 'ssh' ? `SSH ${p.host} · em breve` : 'Backend local · localhost:8000'}
+                          {isExtra ? `SSH ${p.host} · descoberto` : p.type === 'ssh' ? `SSH ${p.host} · em breve` : 'localhost:8000'}
                         </div>
                       </div>
-                      {isExtra && <span style={{ fontSize: '0.68rem', background: '#1a3a2a', color: '#6ee7b7', padding: '0.15rem 0.4rem', borderRadius: '4px' }}>ROS 2 ✓</span>}
                     </label>
                   )
                 })}
@@ -434,39 +698,34 @@ export default function App() {
         <div ref={discoverRef} style={{ position: 'relative' }}>
           <button onClick={() => { setDiscoverPanel(v => !v); setConnPanel(false) }}
             style={{ ...btn('#161a22', '#fbbf24'), display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            🔍 Procurar robô <span style={{ fontSize: '0.7rem', opacity: 0.7 }}>{discoverPanel ? '▲' : '▼'}</span>
+            🔍 Procurar <span style={{ fontSize: '0.7rem', opacity: 0.7 }}>{discoverPanel ? '▲' : '▼'}</span>
           </button>
           {discoverPanel && (
-            <div style={{ position: 'absolute', top: '2.5rem', left: 0, zIndex: 100, background: '#161a22', border: '1px solid #2a3142', borderRadius: '10px', padding: '1rem', width: '400px', boxShadow: '0 8px 32px rgba(0,0,0,0.5)' }}>
+            <div style={{ position: 'absolute', top: '2.5rem', left: 0, zIndex: 100, background: '#161a22', border: '1px solid #2a3142', borderRadius: '10px', padding: '1rem', width: '380px', boxShadow: '0 8px 32px rgba(0,0,0,0.5)' }}>
               <div style={{ fontSize: '0.78rem', color: '#8b92a8', marginBottom: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Descoberta na rede</div>
               <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.75rem' }}>
-                <input placeholder="Subnet (ex: 192.168.1) — auto se vazio" value={subnet} onChange={e => setSubnet(e.target.value)} style={{ ...S.input, flex: 1 }} />
-                <input placeholder="user SSH" value={sshUser} onChange={e => setSshUser(e.target.value)} style={{ ...S.input, width: '90px' }} />
+                <input placeholder="Subnet (ex: 192.168.1) — auto" value={subnet} onChange={e => setSubnet(e.target.value)} style={{ ...S.input, flex: 1 }} />
+                <input placeholder="user SSH" value={sshUser} onChange={e => setSshUser(e.target.value)} style={{ ...S.input, width: '80px' }} />
               </div>
-              <button onClick={discoverRobots} disabled={discovering} style={{ ...btn(discovering ? '#1a2a1a' : '#161a22', '#fbbf24'), width: '100%', marginBottom: '0.75rem' }}>
-                {discovering ? '⏳ Varrendo…' : '▶ Iniciar varredura'}
+              <button onClick={discoverRobots} disabled={discovering} style={{ ...btn('#161a22', '#fbbf24'), width: '100%', marginBottom: '0.75rem' }}>
+                {discovering ? '⏳ Varrendo…' : '▶ Varrer rede'}
               </button>
-              {discoverError && <div style={{ color: '#f87171', fontSize: '0.78rem', marginBottom: '0.5rem' }}>{discoverError}</div>}
-              {discovered.length > 0 && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', maxHeight: '220px', overflowY: 'auto' }}>
-                  {discovered.map(h => {
-                    const st = testingSSH[h.ip]
-                    const stColor = st === 'ok' ? '#6ee7b7' : st === 'no_ros' ? '#fbbf24' : st === 'error' ? '#f87171' : '#8b92a8'
-                    const stLabel = st === 'testing' ? '⏳' : st === 'ok' ? '✓ ROS 2' : st === 'no_ros' ? '⚠ sem ROS' : st === 'error' ? '✗ falhou' : 'Testar SSH'
-                    return (
-                      <div key={h.ip} style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', background: '#0d0f14', borderRadius: '6px', padding: '0.45rem 0.7rem', border: `1px solid ${h.likely_robot ? '#2a3a2a' : '#2a3142'}` }}>
-                        <span style={{ width: 8, height: 8, borderRadius: '50%', background: h.likely_robot ? '#6ee7b7' : '#4b5563', display: 'inline-block', flexShrink: 0 }} />
-                        <div style={{ flex: 1, minWidth: 0 }}>
-                          <div style={{ fontSize: '0.82rem', color: '#e6e9ef', fontFamily: 'monospace' }}>{h.ip}</div>
-                          <div style={{ fontSize: '0.7rem', color: '#4b5563', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{h.hostname}</div>
-                        </div>
-                        {h.likely_robot && <span style={{ fontSize: '0.68rem', color: '#6ee7b7', background: '#1a3a2a', padding: '0.1rem 0.35rem', borderRadius: '4px', flexShrink: 0 }}>robô?</span>}
-                        <button onClick={() => testSSH(h.ip)} disabled={st === 'testing'} style={{ ...btn('#161a22', stColor), fontSize: '0.72rem', padding: '0.25rem 0.5rem', flexShrink: 0 }}>{stLabel}</button>
-                      </div>
-                    )
-                  })}
-                </div>
-              )}
+              {discoverError && <div style={{ color: '#f87171', fontSize: '0.78rem' }}>{discoverError}</div>}
+              {discovered.map(h => {
+                const st = testingSSH[h.ip]
+                const stColor = st === 'ok' ? '#6ee7b7' : st === 'no_ros' ? '#fbbf24' : st === 'error' ? '#f87171' : '#8b92a8'
+                return (
+                  <div key={h.ip} style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', background: '#0d0f14', borderRadius: '6px', padding: '0.4rem 0.65rem', border: '1px solid #2a3142', marginTop: '0.4rem' }}>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: '0.82rem', fontFamily: 'monospace' }}>{h.ip}</div>
+                      <div style={{ fontSize: '0.7rem', color: '#4b5563' }}>{h.hostname}</div>
+                    </div>
+                    <button onClick={() => testSSH(h.ip)} disabled={st === 'testing'} style={{ ...btn('#161a22', stColor), fontSize: '0.72rem', padding: '0.25rem 0.5rem' }}>
+                      {st === 'testing' ? '⏳' : st === 'ok' ? '✓ ROS2' : st === 'no_ros' ? '⚠ sem ROS' : st === 'error' ? '✗' : 'Testar'}
+                    </button>
+                  </div>
+                )
+              })}
             </div>
           )}
         </div>
@@ -475,19 +734,14 @@ export default function App() {
         {connStatus === 'error' && <span style={{ fontSize: '0.8rem', color: '#f87171', fontFamily: 'monospace' }}>✗ {connMsg}</span>}
       </div>
 
-      {/* ── Layout principal ───────────────────────────────────────────────── */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', flex: 1, minHeight: 0, padding: '0.75rem 1.25rem 1rem', overflow: 'hidden' }}>
+      {/* ── Layout 3 colunas ─────────────────────────────────────────────────── */}
+      <div style={{ display: 'grid', gridTemplateColumns: '300px 1fr 340px', gap: '0.75rem', flex: 1, minHeight: 0, padding: '0.75rem 1rem 0.75rem' }}>
 
         {/* Coluna esquerda: formulário */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', overflowY: 'auto', paddingRight: '0.25rem' }}>
+          <span style={{ fontSize: '0.8rem', fontWeight: 600, color: '#6ee7b7', textTransform: 'uppercase', letterSpacing: '0.05em', flexShrink: 0 }}>Configuração</span>
+          <ConfigForm cfg={cfg} onChange={setCfg} currentPose={pose} onAddWaypoint={handleMapAddWaypoint} />
 
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <span style={{ fontSize: '0.8rem', fontWeight: 600, color: '#6ee7b7', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Configuração</span>
-          </div>
-
-          <ConfigForm cfg={cfg} onChange={setCfg} currentPose={pose} />
-
-          {/* Avisos */}
           {!isConnected && (
             <div style={{ color: '#fbbf24', fontSize: '0.82rem', padding: '0.5rem 0.75rem', background: 'rgba(251,191,36,0.08)', borderRadius: '6px', border: '1px solid rgba(251,191,36,0.2)' }}>
               ⚠ Conecte um robô antes de executar.
@@ -495,40 +749,50 @@ export default function App() {
           )}
           {isConnected && !nav2Ok && (
             <div style={{ color: '#fbbf24', fontSize: '0.82rem', padding: '0.5rem 0.75rem', background: 'rgba(251,191,36,0.08)', borderRadius: '6px', border: '1px solid rgba(251,191,36,0.2)' }}>
-              ⚠ Nav2 parece offline — verifique o terminal de simulação.
+              ⚠ Nav2 offline — aguarda ~60s após o Terminal 2.
             </div>
           )}
-          {error && (
-            <div style={{ color: '#f87171', fontSize: '0.82rem', padding: '0.5rem 0.75rem', background: 'rgba(248,113,113,0.1)', borderRadius: '6px' }}>{error}</div>
-          )}
+          {error && <div style={{ color: '#f87171', fontSize: '0.82rem', padding: '0.5rem 0.75rem', background: 'rgba(248,113,113,0.1)', borderRadius: '6px' }}>{error}</div>}
 
-          {/* Botões */}
-          <div style={{ display: 'flex', gap: '0.75rem' }}>
+          <div style={{ display: 'flex', gap: '0.6rem' }}>
             <button onClick={run} disabled={running || !isConnected}
               style={btn(running || !isConnected ? '#1a3a2a' : '#065f46', '#6ee7b7', running || !isConnected)}>
               {running ? '⏳ A executar…' : `▶ Executar ${cfg.command}`}
             </button>
             {running && (
               <button onClick={() => { if (pollRef.current) clearInterval(pollRef.current); setRunning(false) }}
-                style={btn('#3a1a1a', '#f87171')}>■ Parar polling</button>
+                style={btn('#3a1a1a', '#f87171')}>■ Parar</button>
             )}
           </div>
         </div>
 
+        {/* Coluna central: mapa */}
+        <div style={{ display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+          <span style={{ fontSize: '0.8rem', fontWeight: 600, color: '#8b92a8', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.5rem', flexShrink: 0 }}>Mapa</span>
+          <div style={{ flex: 1, minHeight: 0 }}>
+            <MapView
+              robotPose={pose}
+              waypoints={cfg.command === 'record' ? cfg.points : []}
+              onAddWaypoint={handleMapAddWaypoint}
+              onNavigateTo={handleMapNavigateTo}
+            />
+          </div>
+        </div>
+
         {/* Coluna direita: output */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', minHeight: 0 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', minHeight: 0, overflow: 'hidden' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0 }}>
             <span style={{ fontSize: '0.8rem', fontWeight: 600, color: '#8b92a8', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
               Output {jobId && <span style={{ color: '#3b82f6', fontWeight: 400 }}>#{jobId}</span>}
             </span>
             {job && !job.running && (
               <span style={{ fontSize: '0.82rem', color: job.exit_code === 0 ? '#6ee7b7' : '#f87171', fontWeight: 600 }}>
-                {job.exit_code === 0 ? '✓ Sucesso' : `✗ Falhou (exit ${job.exit_code})`}
+                {job.exit_code === 0 ? '✓ Sucesso' : `✗ exit ${job.exit_code}`}
               </span>
             )}
           </div>
 
-          <div ref={outputRef} style={{ flex: 1, background: '#161a22', border: '1px solid #2a3142', borderRadius: '8px', padding: '0.75rem 1rem', overflowY: 'auto', fontFamily: 'JetBrains Mono, Consolas, monospace', fontSize: '0.78rem', lineHeight: 1.7 }}>
+          <div ref={outputRef} style={{ flex: 1, background: '#161a22', border: '1px solid #2a3142', borderRadius: '8px', padding: '0.6rem 0.85rem', overflowY: 'auto', fontFamily: 'JetBrains Mono, Consolas, monospace', fontSize: '0.75rem', lineHeight: 1.6 }}>
             {!job && !running && <span style={{ color: '#8b92a8' }}>Aguardando execução…</span>}
             {job?.lines?.map((line, i) => (
               <div key={i} style={{ color: lineColor(line), whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{line}</div>
@@ -537,26 +801,23 @@ export default function App() {
           </div>
 
           {/* Métricas */}
-          {job?.result?.bag_metrics && Object.keys(job.result.bag_metrics).length > 0 && (() => {
+          {job?.result?.bag_metrics && (() => {
             const m = job.result.bag_metrics
-            const dur  = m.wall_duration_s ?? m.duration_s
-            const path = m.odom_path_length_m ?? m.theoretical_path_m
-            const pathLabel = m.odom_path_length_m != null ? 'Percurso (odom)' : 'Percurso (teórico)'
             const cards = [
-              dur  != null && { label: 'Duração',    value: `${dur} s`,   color: '#93c5fd' },
-              path != null && { label: pathLabel,    value: `${path} m`,  color: '#6ee7b7' },
-              m.odom_avg_speed_ms != null && { label: 'Vel. média', value: `${m.odom_avg_speed_ms} m/s`, color: '#6ee7b7' },
-              m.scan_avg_valid_points != null && { label: 'Scan pts',    value: `${m.scan_avg_valid_points}`,    color: '#fbbf24' },
-              m.imu_accel_mean_ms2   != null && { label: 'IMU accel',   value: `${m.imu_accel_mean_ms2} m/s²`, color: '#c4b5fd' },
+              m.wall_duration_s      != null && { label: 'Duração',      value: `${m.wall_duration_s} s`,      color: '#93c5fd' },
+              m.odom_path_length_m   != null && { label: 'Percurso',     value: `${m.odom_path_length_m} m`,   color: '#6ee7b7' },
+              m.odom_avg_speed_ms    != null && { label: 'Vel. média',   value: `${m.odom_avg_speed_ms} m/s`,  color: '#6ee7b7' },
+              m.scan_avg_valid_points!= null && { label: 'Scan pts',     value: `${m.scan_avg_valid_points}`,  color: '#fbbf24' },
+              m.imu_accel_mean_ms2   != null && { label: 'IMU accel',    value: `${m.imu_accel_mean_ms2} m/s²`,color: '#c4b5fd' },
             ].filter(Boolean)
-            return (
-              <div style={{ background: '#161a22', border: '1px solid #2a3142', borderRadius: '8px', padding: '0.75rem 1rem' }}>
-                <div style={{ fontSize: '0.75rem', color: '#8b92a8', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.6rem' }}>Métricas da gravação</div>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '0.5rem' }}>
+            return cards.length > 0 && (
+              <div style={{ background: '#161a22', border: '1px solid #2a3142', borderRadius: '8px', padding: '0.6rem 0.85rem', flexShrink: 0 }}>
+                <div style={{ fontSize: '0.68rem', color: '#8b92a8', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.4rem' }}>Métricas</div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.35rem' }}>
                   {cards.map(({ label, value, color }) => (
-                    <div key={label} style={{ background: '#0d0f14', borderRadius: '6px', padding: '0.45rem 0.6rem' }}>
-                      <div style={{ fontSize: '0.68rem', color: '#8b92a8', marginBottom: '0.15rem' }}>{label}</div>
-                      <div style={{ fontSize: '0.85rem', fontWeight: 700, color, fontFamily: 'JetBrains Mono, monospace' }}>{value}</div>
+                    <div key={label} style={{ background: '#0d0f14', borderRadius: '5px', padding: '0.3rem 0.5rem' }}>
+                      <div style={{ fontSize: '0.62rem', color: '#8b92a8' }}>{label}</div>
+                      <div style={{ fontSize: '0.78rem', fontWeight: 700, color, fontFamily: 'monospace' }}>{value}</div>
                     </div>
                   ))}
                 </div>
@@ -564,33 +825,10 @@ export default function App() {
             )
           })()}
 
-          {job?.result?.sensor_summary && Object.keys(job.result.sensor_summary).length > 0 && (
-            <div style={{ background: '#161a22', border: '1px solid #2a3142', borderRadius: '8px', padding: '0.75rem 1rem' }}>
-              <div style={{ fontSize: '0.75rem', color: '#8b92a8', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.5rem' }}>Sensores gravados</div>
-              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.78rem', fontFamily: 'JetBrains Mono, Consolas, monospace' }}>
-                <thead><tr>{['Tópico', 'Msgs', 'Hz est.'].map(h => <th key={h} style={{ textAlign: 'left', color: '#8b92a8', fontWeight: 500, paddingBottom: '0.3rem', borderBottom: '1px solid #2a3142' }}>{h}</th>)}</tr></thead>
-                <tbody>
-                  {Object.entries(job.result.sensor_summary).map(([topic, stat]) => (
-                    <tr key={topic}>
-                      <td style={{ color: '#93c5fd', padding: '0.2rem 0.5rem 0.2rem 0' }}>{topic}</td>
-                      <td style={{ color: stat.msgs > 0 ? '#6ee7b7' : '#f87171', padding: '0.2rem 0.5rem' }}>{stat.msgs}</td>
-                      <td style={{ color: '#e6e9ef', padding: '0.2rem 0' }}>{stat.hz_est != null ? `~${stat.hz_est} Hz` : '—'}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-
           {job?.result && (
-            <button onClick={() => setShowResult(true)} style={{ ...btn('#161a22', '#2a3142'), fontSize: '0.78rem', width: '100%', textAlign: 'left' }}>
+            <button onClick={() => setShowResult(true)} style={{ ...btn('#161a22', '#2a3142'), fontSize: '0.75rem', flexShrink: 0 }}>
               ▸ Ver resultado JSON
             </button>
-          )}
-          {job?.error && (
-            <div style={{ color: '#f87171', fontSize: '0.82rem', padding: '0.5rem 0.75rem', background: 'rgba(248,113,113,0.1)', borderRadius: '6px' }}>
-              Erro interno: {job.error}
-            </div>
           )}
         </div>
       </div>
@@ -600,12 +838,12 @@ export default function App() {
         <div onClick={() => setShowResult(false)}
           style={{ position: 'fixed', inset: 0, zIndex: 200, background: 'rgba(0,0,0,0.75)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '2rem' }}>
           <div onClick={e => e.stopPropagation()}
-            style={{ background: '#161a22', border: '1px solid #2a3142', borderRadius: '12px', width: '100%', maxWidth: '860px', maxHeight: '85vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', boxShadow: '0 16px 48px rgba(0,0,0,0.7)' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.85rem 1.25rem', borderBottom: '1px solid #2a3142' }}>
-              <span style={{ fontSize: '0.82rem', fontWeight: 600, color: '#8b92a8', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Resultado JSON</span>
+            style={{ background: '#161a22', border: '1px solid #2a3142', borderRadius: '12px', width: '100%', maxWidth: '800px', maxHeight: '80vh', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.75rem 1.25rem', borderBottom: '1px solid #2a3142' }}>
+              <span style={{ fontSize: '0.82rem', fontWeight: 600, color: '#8b92a8', textTransform: 'uppercase' }}>Resultado JSON</span>
               <button onClick={() => setShowResult(false)} style={{ background: 'none', border: 'none', color: '#8b92a8', cursor: 'pointer', fontSize: '1.1rem' }}>✕</button>
             </div>
-            <pre style={{ flex: 1, overflowY: 'auto', overflowX: 'auto', margin: 0, padding: '1.25rem', fontFamily: 'JetBrains Mono, Consolas, monospace', fontSize: '0.82rem', lineHeight: 1.65, color: '#e6e9ef' }}>
+            <pre style={{ flex: 1, overflowY: 'auto', margin: 0, padding: '1rem', fontFamily: 'monospace', fontSize: '0.8rem', lineHeight: 1.6, color: '#e6e9ef' }}>
               {JSON.stringify(job.result, null, 2)}
             </pre>
           </div>
