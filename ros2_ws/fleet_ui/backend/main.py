@@ -131,7 +131,7 @@ async def lifespan(app: FastAPI):
                 with _status_lock:
                     _robot_pose.update({"x": p.x, "y": p.y, "yaw": yaw, "valid": True})
 
-            # TF lookup: map → base_footprint (usado com SLAM Toolbox)
+            # TF lookup: map → base_link (TurtleBot4 usa base_link)
             import tf2_ros
             from rclpy.time import Time as RclpyTime
             tf_buffer = tf2_ros.Buffer()
@@ -139,7 +139,7 @@ async def lifespan(app: FastAPI):
 
             def tf_timer_cb():
                 try:
-                    t = tf_buffer.lookup_transform("map", "base_footprint", RclpyTime())
+                    t = tf_buffer.lookup_transform("map", "base_link", RclpyTime())
                     tr = t.transform.translation
                     q = t.transform.rotation
                     yaw = math.atan2(
