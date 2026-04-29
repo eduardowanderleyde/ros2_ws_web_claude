@@ -365,6 +365,38 @@ async def get_map():
         return {"available": True, **_map_meta}
 
 
+@app.post("/api/save_background_map")
+async def save_background_map():
+    """Guarda o mapa SLAM actual como fundo persistente em public/slam_map.png + slam_map.json."""
+    import base64 as _b64
+    with _status_lock:
+        if not _map_meta or not _map_meta.get("png_b64"):
+            return JSONResponse({"success": False, "message": "Mapa SLAM não disponível ainda."}, status_code=400)
+        meta = dict(_map_meta)
+
+    public_dir = Path(WORKSPACE) / "fleet_ui" / "frontend" / "public"
+    public_dir.mkdir(parents=True, exist_ok=True)
+
+    png_bytes = _b64.b64decode(meta["png_b64"])
+    (public_dir / "slam_map.png").write_bytes(png_bytes)
+
+    import json as _json
+    slam_meta = {k: v for k, v in meta.items() if k != "png_b64"}
+    (public_dir / "slam_map.json").write_text(_json.dumps(slam_meta))
+
+    return {"success": True, "message": f"Mapa guardado ({meta['width']}×{meta['height']} px, res={meta['resolution']:.3f} m/px)"}
+
+
+@app.get("/api/slam_map_meta")
+async def get_slam_map_meta():
+    """Devolve metadados do slam_map.json guardado (se existir)."""
+    meta_path = Path(WORKSPACE) / "fleet_ui" / "frontend" / "public" / "slam_map.json"
+    if not meta_path.exists():
+        return JSONResponse({"available": False})
+    import json as _json
+    return {"available": True, **_json.loads(meta_path.read_text())}
+
+
 @app.post("/api/start_record")
 async def start_record(robot_id: str = "", route_name: str = "r1"):
     robot_id = robot_id or ""

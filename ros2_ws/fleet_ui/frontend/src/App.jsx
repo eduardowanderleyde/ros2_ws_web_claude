@@ -36,16 +36,30 @@ function btn(bg, color, disabled = false) {
   return { background: bg, color, border: `1px solid ${color}`, borderRadius: '8px', padding: '0.45rem 0.9rem', fontSize: '0.85rem', fontWeight: 600, cursor: disabled ? 'not-allowed' : 'pointer', opacity: disabled ? 0.55 : 1, fontFamily: 'inherit' }
 }
 
+// turtlebot3_house: bounds aproximados em coords mundo (m)
+// A casa tem ~9.5m × 9.5m; robot spawna perto de (-2, -0.5)
+// Ajusta com os sliders se necessário
+const HOUSE_WORLD = { x0: -5.0, y0: -5.0, x1: 7.0, y1: 7.0 }
+
 // ── MapView ───────────────────────────────────────────────────────────────────
 function MapView({ robotPose, waypoints, onAddWaypoint, onNavigateTo }) {
-  const canvasRef  = useRef(null)
-  const imgRef     = useRef(null)      // Image object reutilizável
-  const mapMeta    = useRef(null)      // {resolution, origin_x, origin_y, width, height}
-  const scaleRef   = useRef(1)
-  const panRef     = useRef({ x: 0, y: 0 })
-  const dragRef    = useRef(null)
-  const [clickMode, setClickMode] = useState('waypoint') // 'waypoint' | 'navigate'
-  const [mapOk, setMapOk]         = useState(false)
+  const canvasRef    = useRef(null)
+  const imgRef       = useRef(null)   // SLAM PNG
+  const floorImgRef  = useRef(null)   // Planta estática
+  const mapMeta      = useRef(null)
+  const scaleRef     = useRef(1)
+  const panRef       = useRef({ x: 0, y: 0 })
+  const dragRef      = useRef(null)
+  const [clickMode, setClickMode]       = useState('waypoint')
+  const [mapOk, setMapOk]               = useState(false)
+  const [showFloor, setShowFloor]       = useState(true)
+  const [floorOpacity, setFloorOpacity] = useState(0.55)
+  const [savedMapMeta, setSavedMapMeta] = useState(null)  // {resolution, origin_x, origin_y, width, height}
+  const [savingMap, setSavingMap]       = useState(false)
+  const [saveMsg, setSaveMsg]           = useState(null)
+  // Mantém para compatibilidade com draw (não usados com o slam_map.json)
+  const [floorOffset] = useState({ x: HOUSE_WORLD.x0, y: HOUSE_WORLD.y0 })
+  const [floorScale]  = useState(HOUSE_WORLD.x1 - HOUSE_WORLD.x0)
 
   // Converte coords mundo → canvas
   const worldToCanvas = useCallback((wx, wy) => {
@@ -79,28 +93,68 @@ function MapView({ robotPose, waypoints, onAddWaypoint, onNavigateTo }) {
     const W = canvas.width, H = canvas.height
     ctx.clearRect(0, 0, W, H)
 
-    // Fundo
-    ctx.fillStyle = '#0d0f14'
+    ctx.fillStyle = '#b4b4b4'
     ctx.fillRect(0, 0, W, H)
 
-    // Mapa PNG
-    if (imgRef.current && imgRef.current.complete && mapMeta.current) {
+    if (!mapMeta.current) {
+      // Sem SLAM ainda: mostra planta estática centralizada se disponível
+      if (showFloor && floorImgRef.current?.complete) {
+        const fi = floorImgRef.current
+        const s = Math.min(W / fi.naturalWidth, H / fi.naturalHeight) * 0.92
+        const dx = (W - fi.naturalWidth * s) / 2
+        const dy = (H - fi.naturalHeight * s) / 2
+        ctx.globalAlpha = floorOpacity
+        ctx.drawImage(fi, dx, dy, fi.naturalWidth * s, fi.naturalHeight * s)
+        ctx.globalAlpha = 1
+      }
+      ctx.fillStyle = '#374151'
+      ctx.font = '13px system-ui'
+      ctx.textAlign = 'center'
+      ctx.textBaseline = 'middle'
+      ctx.fillText('Aguardando mapa do SLAM…', W / 2, H - 18)
+      return
+    }
+
+    // Planta de fundo
+    if (showFloor && floorImgRef.current?.complete) {
+      const m = mapMeta.current
+      const fi = floorImgRef.current
+      ctx.globalAlpha = floorOpacity
+      ctx.imageSmoothingEnabled = true
+
+      if (savedMapMeta) {
+        // slam_map.png: alinhamento perfeito via metadados do mapa guardado
+        const sm = savedMapMeta
+        const scaleX = (sm.width  * sm.resolution) / (fi.naturalWidth  * m.resolution) * scaleRef.current
+        const scaleY = (sm.height * sm.resolution) / (fi.naturalHeight * m.resolution) * scaleRef.current
+        // canto inf-esq do slam_map em canvas (origin_x/y são do mapa guardado, em coords SLAM)
+        const cx0 = (sm.origin_x - m.origin_x) / m.resolution * scaleRef.current + panRef.current.x
+        const cy0 = (m.height - (sm.origin_y - m.origin_y) / m.resolution - sm.height * sm.resolution / m.resolution) * scaleRef.current + panRef.current.y
+        ctx.drawImage(fi, cx0, cy0, fi.naturalWidth * scaleX / scaleRef.current * scaleRef.current, fi.naturalHeight * scaleY / scaleRef.current * scaleRef.current)
+      } else {
+        // house_map.png decorativa: bounds aproximados da casa
+        const pxPerMeter = scaleRef.current / m.resolution
+        const imgW_px = floorScale * pxPerMeter
+        const imgH_px = (fi.naturalHeight / fi.naturalWidth) * imgW_px
+        const cx0 = (floorOffset.x - m.origin_x) / m.resolution * scaleRef.current + panRef.current.x
+        const cy0 = (m.height - (floorOffset.y + floorScale * (fi.naturalHeight / fi.naturalWidth) - m.origin_y) / m.resolution) * scaleRef.current + panRef.current.y
+        ctx.drawImage(fi, cx0, cy0, imgW_px, imgH_px)
+      }
+      ctx.globalAlpha = 1
+    }
+
+    // SLAM map
+    if (imgRef.current?.complete) {
       const m = mapMeta.current
       ctx.imageSmoothingEnabled = false
+      ctx.globalAlpha = showFloor ? 0.82 : 1
       ctx.drawImage(
         imgRef.current,
         panRef.current.x, panRef.current.y,
         m.width * scaleRef.current,
         m.height * scaleRef.current,
       )
-    }
-
-    if (!mapMeta.current) {
-      ctx.fillStyle = '#4b5563'
-      ctx.font = '14px system-ui'
-      ctx.textAlign = 'center'
-      ctx.fillText('Aguardando mapa do SLAM…', W / 2, H / 2)
-      return
+      ctx.globalAlpha = 1
     }
 
     // Waypoints
@@ -150,7 +204,24 @@ function MapView({ robotPose, waypoints, onAddWaypoint, onNavigateTo }) {
         ctx.restore()
       }
     }
-  }, [robotPose, waypoints, worldToCanvas])
+  }, [robotPose, waypoints, worldToCanvas, showFloor, floorOpacity, floorOffset, floorScale, savedMapMeta])
+
+  // Carrega fundo: prefere slam_map.png (mapa guardado) > house_map.png (decorativo)
+  useEffect(() => {
+    const loadFloor = (src, meta) => {
+      const img = new Image()
+      img.src = src + '?t=' + Date.now()
+      img.onload = () => { floorImgRef.current = img; if (meta) setSavedMapMeta(meta); draw() }
+    }
+    // Verifica se existe slam_map.json guardado
+    fetch(`${API}/slam_map_meta`)
+      .then(r => r.json())
+      .then(d => {
+        if (d.available) loadFloor('/slam_map.png', d)
+        else loadFloor('/house_map.png', null)
+      })
+      .catch(() => loadFloor('/house_map.png', null))
+  }, [draw])
 
   // Busca mapa periodicamente
   useEffect(() => {
@@ -172,17 +243,7 @@ function MapView({ robotPose, waypoints, onAddWaypoint, onNavigateTo }) {
         if (imgRef.current.src !== dataUrl) {
           imgRef.current.src = dataUrl
           imgRef.current.onload = () => {
-            // Ajusta escala inicial para caber no canvas
-            const canvas = canvasRef.current
-            if (!canvas) return
-            const sx = canvas.width  / data.width
-            const sy = canvas.height / data.height
-            const s  = Math.min(sx, sy) * 0.92
-            scaleRef.current = s
-            panRef.current = {
-              x: (canvas.width  - data.width  * s) / 2,
-              y: (canvas.height - data.height * s) / 2,
-            }
+            fitMap()
             setMapOk(true)
             draw()
           }
@@ -199,18 +260,34 @@ function MapView({ robotPose, waypoints, onAddWaypoint, onNavigateTo }) {
   // Redesenha quando pose ou waypoints mudam
   useEffect(() => { draw() }, [draw, robotPose, waypoints])
 
-  // Redimensiona canvas ao container
+  // Ajusta escala/pan para caber o mapa no canvas
+  const fitMap = useCallback(() => {
+    const canvas = canvasRef.current
+    const m = mapMeta.current
+    if (!canvas || !m) return
+    const W = canvas.width, H = canvas.height
+    if (!W || !H) return
+    const s = Math.min(W / m.width, H / m.height) * 0.88
+    scaleRef.current = s
+    panRef.current   = { x: (W - m.width * s) / 2, y: (H - m.height * s) / 2 }
+  }, [])
+
+  // Redimensiona canvas ao container e re-centra o mapa
   useEffect(() => {
     const canvas = canvasRef.current
     if (!canvas) return
     const ro = new ResizeObserver(() => {
       canvas.width  = canvas.offsetWidth
       canvas.height = canvas.offsetHeight
+      if (mapMeta.current) fitMap()
       draw()
     })
+    // Inicializa dimensões imediatamente
+    canvas.width  = canvas.offsetWidth  || 600
+    canvas.height = canvas.offsetHeight || 500
     ro.observe(canvas)
     return () => ro.disconnect()
-  }, [draw])
+  }, [draw, fitMap])
 
   // Zoom com scroll
   const onWheel = useCallback(e => {
@@ -275,8 +352,62 @@ function MapView({ robotPose, waypoints, onAddWaypoint, onNavigateTo }) {
         <span style={{ fontSize: '0.72rem', color: '#8b92a8', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
           Clique no mapa:
         </span>
-        {modeBtn('waypoint',  '+ Waypoint',  '#6366f1')}
-        {modeBtn('navigate',  '→ Ir agora',  '#6ee7b7')}
+        {modeBtn('waypoint', '+ Waypoint', '#6366f1')}
+        {modeBtn('navigate', '→ Ir agora', '#6ee7b7')}
+        {mapOk && (
+          <button onClick={() => { fitMap(); draw() }}
+            style={{ ...btn('#161a22', '#8b92a8'), fontSize: '0.72rem', padding: '0.25rem 0.55rem' }}>
+            ⊞ Centrar
+          </button>
+        )}
+
+        {/* Controlos da planta */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginLeft: '0.5rem', borderLeft: '1px solid #2a3142', paddingLeft: '0.6rem' }}>
+          <button onClick={() => setShowFloor(v => !v)}
+            style={{ ...btn(showFloor ? '#1a2a1a' : '#161a22', showFloor ? '#6ee7b7' : '#4b5563'), fontSize: '0.72rem', padding: '0.25rem 0.55rem' }}>
+            🏠 {savedMapMeta ? 'Mapa guardado' : 'Planta'}
+          </button>
+          {showFloor && (
+            <>
+              <input type="range" min="0" max="1" step="0.05" value={floorOpacity}
+                onChange={e => { setFloorOpacity(parseFloat(e.target.value)); draw() }}
+                title="Opacidade da planta"
+                style={{ width: '64px', accentColor: '#6ee7b7', cursor: 'pointer' }} />
+              <span style={{ fontSize: '0.68rem', color: '#4b5563', fontFamily: 'monospace', minWidth: '28px' }}>
+                {Math.round(floorOpacity * 100)}%
+              </span>
+            </>
+          )}
+          {mapOk && (
+            <button
+              onClick={async () => {
+                setSavingMap(true); setSaveMsg(null)
+                try {
+                  const r = await fetch(`${API}/save_background_map`, { method: 'POST' })
+                  const d = await r.json()
+                  setSaveMsg(d.success ? 'ok' : 'erro')
+                  if (d.success) {
+                    // Recarrega o slam_map.png guardado
+                    const img = new Image()
+                    img.src = '/slam_map.png?t=' + Date.now()
+                    img.onload = () => {
+                      floorImgRef.current = img
+                      fetch(`${API}/slam_map_meta`).then(r => r.json()).then(d => {
+                        if (d.available) setSavedMapMeta(d)
+                        draw()
+                      })
+                    }
+                  }
+                } catch { setSaveMsg('erro') }
+                finally { setSavingMap(false); setTimeout(() => setSaveMsg(null), 4000) }
+              }}
+              disabled={savingMap}
+              style={{ ...btn('#161a22', saveMsg === 'ok' ? '#6ee7b7' : saveMsg === 'erro' ? '#f87171' : '#6366f1'), fontSize: '0.72rem', padding: '0.25rem 0.55rem' }}>
+              {savingMap ? '⏳' : saveMsg === 'ok' ? '✓ Guardado' : saveMsg === 'erro' ? '✗ Erro' : '💾 Salvar fundo'}
+            </button>
+          )}
+        </div>
+
         <span style={{ marginLeft: 'auto', fontSize: '0.7rem', color: '#4b5563', fontFamily: 'monospace' }}>
           {mapOk ? 'scroll=zoom  alt+drag=pan' : ''}
         </span>
@@ -367,7 +498,7 @@ function XYYaw({ value, onChange, label }) {
 }
 
 // ── Formulário de configuração ────────────────────────────────────────────────
-function ConfigForm({ cfg, onChange, currentPose, onAddWaypoint }) {
+function ConfigForm({ cfg, onChange, currentPose }) {
   const set = (key, val) => onChange({ ...cfg, [key]: val })
 
   const toggleTopic = t => {
