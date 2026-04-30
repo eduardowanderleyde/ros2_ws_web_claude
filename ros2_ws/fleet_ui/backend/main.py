@@ -60,19 +60,26 @@ def _run_ros2_service(srv: str, srv_type: str, request_json: str, timeout: int =
 
 
 def _encode_map_png(data: list, width: int, height: int) -> bytes:
-    """Codifica OccupancyGrid como PNG grayscale (Y flipado para canvas)."""
-    pixels = []
+    """Codifica OccupancyGrid como PNG RGBA colorido (Y flipado para canvas).
+    Paleta:
+      desconhecido (-1): azul-cinza suave   #b0bcc8  semi-transparente
+      livre        ( 0): branco quente      #f5f5f0
+      ocupado      (>0): azul-escuro        #2d3748
+    """
+    # RGBA 4 bytes por pixel
+    pixels: list[tuple[int, int, int, int]] = []
     for v in data:
         if v < 0:
-            pixels.append(180)   # desconhecido: cinza
+            pixels.append((176, 188, 200, 210))  # desconhecido: azul-cinza
         elif v == 0:
-            pixels.append(240)   # livre: branco
+            pixels.append((245, 245, 240, 255))  # livre: creme quase branco
         else:
-            pixels.append(30)    # ocupado: quase preto
+            pixels.append((45, 55, 72, 255))     # ocupado: azul-escuro
 
     def make_row(row_idx: int) -> bytes:
         row = bytearray([0])  # filter type None
-        row.extend(pixels[row_idx * width:(row_idx + 1) * width])
+        for r, g, b, a in pixels[row_idx * width:(row_idx + 1) * width]:
+            row.extend([r, g, b, a])
         return bytes(row)
 
     # Flipa Y: row 0 do PNG = maior y do mundo
@@ -84,7 +91,8 @@ def _encode_map_png(data: list, width: int, height: int) -> bytes:
         return struct.pack('>I', len(payload)) + body + struct.pack('>I', zlib.crc32(body) & 0xFFFFFFFF)
 
     png = b'\x89PNG\r\n\x1a\n'
-    png += png_chunk(b'IHDR', struct.pack('>IIBBBBB', width, height, 8, 0, 0, 0, 0))
+    # color_type=6 → RGBA
+    png += png_chunk(b'IHDR', struct.pack('>IIBBBBB', width, height, 8, 6, 0, 0, 0))
     png += png_chunk(b'IDAT', compressed)
     png += png_chunk(b'IEND', b'')
     return png

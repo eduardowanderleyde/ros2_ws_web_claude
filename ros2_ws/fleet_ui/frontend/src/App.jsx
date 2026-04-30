@@ -36,13 +36,11 @@ function btn(bg, color, disabled = false) {
   return { background: bg, color, border: `1px solid ${color}`, borderRadius: '8px', padding: '0.45rem 0.9rem', fontSize: '0.85rem', fontWeight: 600, cursor: disabled ? 'not-allowed' : 'pointer', opacity: disabled ? 0.55 : 1, fontFamily: 'inherit' }
 }
 
-// turtlebot3_house: bounds aproximados em coords mundo (m)
-// A casa tem ~9.5m × 9.5m; robot spawna perto de (-2, -0.5)
-// Ajusta com os sliders se necessário
 const HOUSE_WORLD = { x0: -5.0, y0: -5.0, x1: 7.0, y1: 7.0 }
 
 // ── MapView ───────────────────────────────────────────────────────────────────
 function MapView({ robotPose, waypoints, onAddWaypoint, onNavigateTo }) {
+  // mantém compatibilidade de estado existente + novos
   const canvasRef    = useRef(null)
   const imgRef       = useRef(null)   // SLAM PNG
   const floorImgRef  = useRef(null)   // Planta estática
@@ -54,10 +52,10 @@ function MapView({ robotPose, waypoints, onAddWaypoint, onNavigateTo }) {
   const [mapOk, setMapOk]               = useState(false)
   const [showFloor, setShowFloor]       = useState(true)
   const [floorOpacity, setFloorOpacity] = useState(0.55)
-  const [savedMapMeta, setSavedMapMeta] = useState(null)  // {resolution, origin_x, origin_y, width, height}
+  const [savedMapMeta, setSavedMapMeta] = useState(null)
   const [savingMap, setSavingMap]       = useState(false)
   const [saveMsg, setSaveMsg]           = useState(null)
-  // Mantém para compatibilidade com draw (não usados com o slam_map.json)
+  const [hoverCoord, setHoverCoord]     = useState(null)  // {x, y} em coords mundo
   const [floorOffset] = useState({ x: HOUSE_WORLD.x0, y: HOUSE_WORLD.y0 })
   const [floorScale]  = useState(HOUSE_WORLD.x1 - HOUSE_WORLD.x0)
 
@@ -93,46 +91,46 @@ function MapView({ robotPose, waypoints, onAddWaypoint, onNavigateTo }) {
     const W = canvas.width, H = canvas.height
     ctx.clearRect(0, 0, W, H)
 
-    ctx.fillStyle = '#b4b4b4'
+    // ── Fundo com grid pontilhada ─────────────────────────────────────────────
+    ctx.fillStyle = '#0f1117'
     ctx.fillRect(0, 0, W, H)
+    ctx.fillStyle = 'rgba(255,255,255,0.04)'
+    const gridStep = 24
+    for (let gx = 0; gx < W; gx += gridStep)
+      for (let gy = 0; gy < H; gy += gridStep) {
+        ctx.beginPath(); ctx.arc(gx, gy, 0.8, 0, Math.PI * 2); ctx.fill()
+      }
 
     if (!mapMeta.current) {
-      // Sem SLAM ainda: mostra planta estática centralizada se disponível
       if (showFloor && floorImgRef.current?.complete) {
         const fi = floorImgRef.current
-        const s = Math.min(W / fi.naturalWidth, H / fi.naturalHeight) * 0.92
-        const dx = (W - fi.naturalWidth * s) / 2
-        const dy = (H - fi.naturalHeight * s) / 2
+        const s = Math.min(W / fi.naturalWidth, H / fi.naturalHeight) * 0.88
         ctx.globalAlpha = floorOpacity
-        ctx.drawImage(fi, dx, dy, fi.naturalWidth * s, fi.naturalHeight * s)
+        ctx.drawImage(fi, (W - fi.naturalWidth * s) / 2, (H - fi.naturalHeight * s) / 2,
+                      fi.naturalWidth * s, fi.naturalHeight * s)
         ctx.globalAlpha = 1
       }
-      ctx.fillStyle = '#374151'
+      ctx.fillStyle = '#6b7280'
       ctx.font = '13px system-ui'
       ctx.textAlign = 'center'
       ctx.textBaseline = 'middle'
-      ctx.fillText('Aguardando mapa do SLAM…', W / 2, H - 18)
+      ctx.fillText('⏳ Aguardando mapa SLAM…', W / 2, H / 2)
       return
     }
 
-    // Planta de fundo
+    // ── Planta de fundo ───────────────────────────────────────────────────────
     if (showFloor && floorImgRef.current?.complete) {
-      const m = mapMeta.current
-      const fi = floorImgRef.current
+      const m = mapMeta.current, fi = floorImgRef.current
       ctx.globalAlpha = floorOpacity
       ctx.imageSmoothingEnabled = true
-
       if (savedMapMeta) {
-        // slam_map.png: alinhamento perfeito via metadados do mapa guardado
         const sm = savedMapMeta
-        const scaleX = (sm.width  * sm.resolution) / (fi.naturalWidth  * m.resolution) * scaleRef.current
+        const scaleX = (sm.width * sm.resolution) / (fi.naturalWidth * m.resolution) * scaleRef.current
         const scaleY = (sm.height * sm.resolution) / (fi.naturalHeight * m.resolution) * scaleRef.current
-        // canto inf-esq do slam_map em canvas (origin_x/y são do mapa guardado, em coords SLAM)
         const cx0 = (sm.origin_x - m.origin_x) / m.resolution * scaleRef.current + panRef.current.x
         const cy0 = (m.height - (sm.origin_y - m.origin_y) / m.resolution - sm.height * sm.resolution / m.resolution) * scaleRef.current + panRef.current.y
-        ctx.drawImage(fi, cx0, cy0, fi.naturalWidth * scaleX / scaleRef.current * scaleRef.current, fi.naturalHeight * scaleY / scaleRef.current * scaleRef.current)
+        ctx.drawImage(fi, cx0, cy0, fi.naturalWidth * scaleX, fi.naturalHeight * scaleY)
       } else {
-        // house_map.png decorativa: bounds aproximados da casa
         const pxPerMeter = scaleRef.current / m.resolution
         const imgW_px = floorScale * pxPerMeter
         const imgH_px = (fi.naturalHeight / fi.naturalWidth) * imgW_px
@@ -143,66 +141,117 @@ function MapView({ robotPose, waypoints, onAddWaypoint, onNavigateTo }) {
       ctx.globalAlpha = 1
     }
 
-    // SLAM map
+    // ── Mapa SLAM ─────────────────────────────────────────────────────────────
     if (imgRef.current?.complete) {
       const m = mapMeta.current
       ctx.imageSmoothingEnabled = false
-      ctx.globalAlpha = showFloor ? 0.82 : 1
-      ctx.drawImage(
-        imgRef.current,
+      ctx.globalAlpha = showFloor ? 0.85 : 1
+      ctx.drawImage(imgRef.current,
         panRef.current.x, panRef.current.y,
-        m.width * scaleRef.current,
-        m.height * scaleRef.current,
-      )
+        m.width * scaleRef.current, m.height * scaleRef.current)
       ctx.globalAlpha = 1
     }
 
-    // Waypoints
-    waypoints.forEach((wp, i) => {
-      const c = worldToCanvas(wp[0], wp[1])
-      if (!c) return
+    // ── Linha de percurso entre waypoints ─────────────────────────────────────
+    const wps = waypoints.map(wp => worldToCanvas(wp[0], wp[1])).filter(Boolean)
+    if (wps.length > 1) {
+      ctx.beginPath()
+      ctx.moveTo(wps[0].x, wps[0].y)
+      wps.slice(1).forEach(c => ctx.lineTo(c.x, c.y))
+      ctx.strokeStyle = 'rgba(99,102,241,0.4)'
+      ctx.lineWidth = 2
+      ctx.setLineDash([6, 4])
+      ctx.stroke()
+      ctx.setLineDash([])
+    }
+
+    // ── Waypoints ─────────────────────────────────────────────────────────────
+    wps.forEach((c, i) => {
+      // Halo exterior
+      ctx.beginPath()
+      ctx.arc(c.x, c.y, 13, 0, Math.PI * 2)
+      ctx.fillStyle = 'rgba(99,102,241,0.18)'
+      ctx.fill()
+      // Círculo principal
       ctx.beginPath()
       ctx.arc(c.x, c.y, 9, 0, Math.PI * 2)
-      ctx.fillStyle = 'rgba(99,102,241,0.85)'
+      ctx.fillStyle = '#6366f1'
       ctx.fill()
       ctx.strokeStyle = '#a5b4fc'
-      ctx.lineWidth = 2
+      ctx.lineWidth = 1.5
       ctx.stroke()
+      // Número
       ctx.fillStyle = '#fff'
-      ctx.font = 'bold 10px monospace'
+      ctx.font = 'bold 9px monospace'
       ctx.textAlign = 'center'
       ctx.textBaseline = 'middle'
       ctx.fillText(String(i + 1), c.x, c.y)
     })
 
-    // Robô
+    // ── Robô ──────────────────────────────────────────────────────────────────
     if (robotPose?.valid) {
       const c = worldToCanvas(robotPose.x, robotPose.y)
       if (c) {
         ctx.save()
         ctx.translate(c.x, c.y)
-        ctx.rotate(-robotPose.yaw)  // canvas Y invertido
-        // Sombra
+        ctx.rotate(-robotPose.yaw)
+        // Anel exterior pulsante
+        ctx.beginPath()
+        ctx.arc(0, 0, 18, 0, Math.PI * 2)
+        ctx.fillStyle = 'rgba(110,231,183,0.12)'
+        ctx.fill()
+        ctx.strokeStyle = 'rgba(110,231,183,0.35)'
+        ctx.lineWidth = 1.5
+        ctx.stroke()
+        // Corpo
         ctx.shadowColor = '#6ee7b7'
-        ctx.shadowBlur = 10
-        // Corpo (círculo)
+        ctx.shadowBlur = 14
         ctx.beginPath()
         ctx.arc(0, 0, 11, 0, Math.PI * 2)
         ctx.fillStyle = '#065f46'
         ctx.fill()
         ctx.strokeStyle = '#6ee7b7'
-        ctx.lineWidth = 2.5
+        ctx.lineWidth = 2
         ctx.stroke()
+        ctx.shadowBlur = 0
         // Seta de direcção
         ctx.beginPath()
-        ctx.moveTo(11, 0)
-        ctx.lineTo(-6, -6)
-        ctx.lineTo(-6, 6)
+        ctx.moveTo(14, 0)
+        ctx.lineTo(-5, -5.5)
+        ctx.lineTo(-5, 5.5)
         ctx.closePath()
         ctx.fillStyle = '#6ee7b7'
         ctx.fill()
         ctx.restore()
       }
+    }
+
+    // ── Barra de escala ───────────────────────────────────────────────────────
+    if (mapMeta.current) {
+      const m = mapMeta.current
+      const metersPerPixel = m.resolution / scaleRef.current
+      // Escolhe um valor "bonito" para a escala
+      const targets = [0.1, 0.25, 0.5, 1, 2, 5, 10]
+      const targetPx = 80
+      const target = targets.reduce((best, t) =>
+        Math.abs(t / metersPerPixel - targetPx) < Math.abs(best / metersPerPixel - targetPx) ? t : best
+      , targets[0])
+      const barPx = target / metersPerPixel
+      const bx = 16, by = H - 22
+      ctx.fillStyle = 'rgba(0,0,0,0.5)'
+      ctx.fillRect(bx - 4, by - 10, barPx + 8, 18)
+      ctx.strokeStyle = '#6ee7b7'
+      ctx.lineWidth = 2
+      ctx.beginPath()
+      ctx.moveTo(bx, by); ctx.lineTo(bx + barPx, by)
+      ctx.moveTo(bx, by - 4); ctx.lineTo(bx, by + 4)
+      ctx.moveTo(bx + barPx, by - 4); ctx.lineTo(bx + barPx, by + 4)
+      ctx.stroke()
+      ctx.fillStyle = '#6ee7b7'
+      ctx.font = '10px monospace'
+      ctx.textAlign = 'center'
+      ctx.textBaseline = 'bottom'
+      ctx.fillText(`${target < 1 ? target * 100 + 'cm' : target + 'm'}`, bx + barPx / 2, by - 3)
     }
   }, [robotPose, waypoints, worldToCanvas, showFloor, floorOpacity, floorOffset, floorScale, savedMapMeta])
 
@@ -313,122 +362,148 @@ function MapView({ robotPose, waypoints, onAddWaypoint, onNavigateTo }) {
     return () => canvas.removeEventListener('wheel', onWheel)
   }, [onWheel])
 
-  // Pan com drag
+  // Pan com botão direito ou middle
   const onMouseDown = e => {
-    if (e.button === 1 || e.altKey) {
+    if (e.button === 1 || e.button === 2 || e.altKey) {
       dragRef.current = { x: e.clientX - panRef.current.x, y: e.clientY - panRef.current.y }
+      e.preventDefault()
     }
   }
   const onMouseMove = e => {
+    // Actualiza coordenadas de hover
+    const rect = canvasRef.current?.getBoundingClientRect()
+    if (rect) {
+      const w = canvasToWorld(e.clientX - rect.left, e.clientY - rect.top)
+      setHoverCoord(w)
+    }
     if (!dragRef.current) return
     panRef.current = { x: e.clientX - dragRef.current.x, y: e.clientY - dragRef.current.y }
     draw()
   }
-  const onMouseUp = () => { dragRef.current = null }
+  const onMouseLeave = () => { dragRef.current = null; setHoverCoord(null) }
+  const onMouseUp    = () => { dragRef.current = null }
 
-  // Clique → acção
+  // Clique → acção (só botão esquerdo, sem drag)
   const onClick = e => {
     if (!mapMeta.current || dragRef.current) return
     const rect = canvasRef.current.getBoundingClientRect()
-    const cx = e.clientX - rect.left
-    const cy = e.clientY - rect.top
-    const world = canvasToWorld(cx, cy)
+    const world = canvasToWorld(e.clientX - rect.left, e.clientY - rect.top)
     if (!world) return
     if (clickMode === 'waypoint') onAddWaypoint(world.x, world.y)
     else onNavigateTo(world.x, world.y)
   }
 
-  const modeBtn = (mode, label, color) => (
+  const modeBtn = (mode, label, active_color) => (
     <button onClick={() => setClickMode(mode)}
-      style={{ ...btn(clickMode === mode ? '#1a1f2e' : '#0d0f14', color, false), fontSize: '0.75rem', padding: '0.3rem 0.7rem', borderWidth: clickMode === mode ? 2 : 1 }}>
+      style={{
+        background: clickMode === mode ? active_color + '22' : 'transparent',
+        color: clickMode === mode ? active_color : '#6b7280',
+        border: `1.5px solid ${clickMode === mode ? active_color : '#2a3142'}`,
+        borderRadius: '6px', padding: '0.3rem 0.75rem',
+        fontSize: '0.75rem', fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit',
+        transition: 'all 0.15s',
+      }}>
       {label}
     </button>
   )
 
+  const saveBackground = async () => {
+    setSavingMap(true); setSaveMsg(null)
+    try {
+      const r = await fetch(`${API}/save_background_map`, { method: 'POST' })
+      const d = await r.json()
+      setSaveMsg(d.success ? 'ok' : 'erro')
+      if (d.success) {
+        const img = new Image()
+        img.src = '/slam_map.png?t=' + Date.now()
+        img.onload = () => {
+          floorImgRef.current = img
+          fetch(`${API}/slam_map_meta`).then(r => r.json()).then(d => {
+            if (d.available) setSavedMapMeta(d); draw()
+          })
+        }
+      }
+    } catch { setSaveMsg('erro') }
+    finally { setSavingMap(false); setTimeout(() => setSaveMsg(null), 4000) }
+  }
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', gap: '0.5rem' }}>
-      {/* Barra de ferramentas do mapa */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', flexShrink: 0 }}>
-        <span style={{ fontSize: '0.72rem', color: '#8b92a8', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-          Clique no mapa:
-        </span>
-        {modeBtn('waypoint', '+ Waypoint', '#6366f1')}
-        {modeBtn('navigate', '→ Ir agora', '#6ee7b7')}
+
+      {/* ── Barra de ferramentas ───────────────────────────────────────────── */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexShrink: 0,
+                    background: '#161a22', borderRadius: '8px', padding: '0.4rem 0.7rem',
+                    border: '1px solid #2a3142' }}>
+
+        {/* Modos de clique */}
+        {modeBtn('waypoint', '＋ Waypoint', '#6366f1')}
+        {modeBtn('navigate', '→ Ir agora',  '#6ee7b7')}
+
+        <div style={{ width: '1px', height: '20px', background: '#2a3142', margin: '0 0.2rem' }} />
+
+        {/* Centrar */}
         {mapOk && (
           <button onClick={() => { fitMap(); draw() }}
-            style={{ ...btn('#161a22', '#8b92a8'), fontSize: '0.72rem', padding: '0.25rem 0.55rem' }}>
+            style={{ background: 'transparent', color: '#6b7280', border: '1.5px solid #2a3142',
+                     borderRadius: '6px', padding: '0.3rem 0.65rem', fontSize: '0.75rem',
+                     fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' }}>
             ⊞ Centrar
           </button>
         )}
 
-        {/* Controlos da planta */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginLeft: '0.5rem', borderLeft: '1px solid #2a3142', paddingLeft: '0.6rem' }}>
-          <button onClick={() => setShowFloor(v => !v)}
-            style={{ ...btn(showFloor ? '#1a2a1a' : '#161a22', showFloor ? '#6ee7b7' : '#4b5563'), fontSize: '0.72rem', padding: '0.25rem 0.55rem' }}>
-            🏠 {savedMapMeta ? 'Mapa guardado' : 'Planta'}
-          </button>
-          {showFloor && (
-            <>
-              <input type="range" min="0" max="1" step="0.05" value={floorOpacity}
-                onChange={e => { setFloorOpacity(parseFloat(e.target.value)); draw() }}
-                title="Opacidade da planta"
-                style={{ width: '64px', accentColor: '#6ee7b7', cursor: 'pointer' }} />
-              <span style={{ fontSize: '0.68rem', color: '#4b5563', fontFamily: 'monospace', minWidth: '28px' }}>
-                {Math.round(floorOpacity * 100)}%
-              </span>
-            </>
-          )}
-          {mapOk && (
-            <button
-              onClick={async () => {
-                setSavingMap(true); setSaveMsg(null)
-                try {
-                  const r = await fetch(`${API}/save_background_map`, { method: 'POST' })
-                  const d = await r.json()
-                  setSaveMsg(d.success ? 'ok' : 'erro')
-                  if (d.success) {
-                    // Recarrega o slam_map.png guardado
-                    const img = new Image()
-                    img.src = '/slam_map.png?t=' + Date.now()
-                    img.onload = () => {
-                      floorImgRef.current = img
-                      fetch(`${API}/slam_map_meta`).then(r => r.json()).then(d => {
-                        if (d.available) setSavedMapMeta(d)
-                        draw()
-                      })
-                    }
-                  }
-                } catch { setSaveMsg('erro') }
-                finally { setSavingMap(false); setTimeout(() => setSaveMsg(null), 4000) }
-              }}
-              disabled={savingMap}
-              style={{ ...btn('#161a22', saveMsg === 'ok' ? '#6ee7b7' : saveMsg === 'erro' ? '#f87171' : '#6366f1'), fontSize: '0.72rem', padding: '0.25rem 0.55rem' }}>
-              {savingMap ? '⏳' : saveMsg === 'ok' ? '✓ Guardado' : saveMsg === 'erro' ? '✗ Erro' : '💾 Salvar fundo'}
-            </button>
-          )}
-        </div>
+        {/* Planta / Salvar */}
+        <button onClick={() => setShowFloor(v => !v)}
+          style={{ background: showFloor ? 'rgba(110,231,183,0.1)' : 'transparent',
+                   color: showFloor ? '#6ee7b7' : '#6b7280',
+                   border: `1.5px solid ${showFloor ? '#6ee7b7' : '#2a3142'}`,
+                   borderRadius: '6px', padding: '0.3rem 0.65rem', fontSize: '0.75rem',
+                   fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' }}>
+          🏠 {savedMapMeta ? 'Fundo' : 'Planta'}
+        </button>
 
-        <span style={{ marginLeft: 'auto', fontSize: '0.7rem', color: '#4b5563', fontFamily: 'monospace' }}>
-          {mapOk ? 'scroll=zoom  alt+drag=pan' : ''}
-        </span>
-        {!mapOk && (
-          <span style={{ fontSize: '0.72rem', color: '#fbbf24' }}>⏳ aguardando SLAM…</span>
+        {showFloor && (
+          <input type="range" min="0" max="1" step="0.05" value={floorOpacity}
+            onChange={e => { setFloorOpacity(parseFloat(e.target.value)); draw() }}
+            style={{ width: '56px', accentColor: '#6ee7b7', cursor: 'pointer' }} />
         )}
+
+        {mapOk && (
+          <button onClick={saveBackground} disabled={savingMap}
+            style={{ background: 'transparent',
+                     color: saveMsg === 'ok' ? '#6ee7b7' : saveMsg === 'erro' ? '#f87171' : '#6366f1',
+                     border: `1.5px solid ${saveMsg === 'ok' ? '#6ee7b7' : saveMsg === 'erro' ? '#f87171' : '#6366f1'}`,
+                     borderRadius: '6px', padding: '0.3rem 0.65rem', fontSize: '0.75rem',
+                     fontWeight: 600, cursor: savingMap ? 'not-allowed' : 'pointer',
+                     opacity: savingMap ? 0.6 : 1, fontFamily: 'inherit' }}>
+            {savingMap ? '⏳' : saveMsg === 'ok' ? '✓ Salvo' : saveMsg === 'erro' ? '✗ Erro' : '💾 Salvar'}
+          </button>
+        )}
+
+        {/* Coordenadas de hover */}
+        <div style={{ marginLeft: 'auto', fontFamily: 'monospace', fontSize: '0.72rem',
+                      color: hoverCoord ? '#93c5fd' : '#374151', minWidth: '120px', textAlign: 'right' }}>
+          {hoverCoord
+            ? `x ${hoverCoord.x.toFixed(2)}  y ${hoverCoord.y.toFixed(2)}`
+            : mapOk ? 'scroll=zoom  btn2=pan' : <span style={{ color: '#fbbf24' }}>⏳ aguardando SLAM…</span>
+          }
+        </div>
       </div>
 
-      {/* Canvas do mapa */}
+      {/* ── Canvas do mapa ────────────────────────────────────────────────── */}
       <canvas
         ref={canvasRef}
         onClick={onClick}
         onMouseDown={onMouseDown}
         onMouseMove={onMouseMove}
         onMouseUp={onMouseUp}
-        onMouseLeave={onMouseUp}
+        onMouseLeave={onMouseLeave}
+        onContextMenu={e => e.preventDefault()}
         style={{
           flex: 1,
           width: '100%',
           borderRadius: '10px',
-          border: '1px solid #2a3142',
+          border: '1px solid #1e2535',
+          boxShadow: '0 4px 24px rgba(0,0,0,0.4)',
           cursor: clickMode === 'navigate' ? 'crosshair' : 'cell',
           display: 'block',
         }}
