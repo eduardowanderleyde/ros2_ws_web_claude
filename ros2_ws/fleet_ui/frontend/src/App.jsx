@@ -70,29 +70,30 @@ function MapView({ robotPose, waypoints, onAddWaypoint, onNavigateTo }) {
   const [floorOffset] = useState({ x: HOUSE_WORLD.x0, y: HOUSE_WORLD.y0 })
   const [floorScale]  = useState(HOUSE_WORLD.x1 - HOUSE_WORLD.x0)
 
+  // Usa SLAM se disponível, senão usa o mapa estático do warehouse
+  const activeMap = useCallback(() => mapMeta.current || WAREHOUSE_MAP, [])
+
   // Converte coords mundo → canvas
   const worldToCanvas = useCallback((wx, wy) => {
-    const m = mapMeta.current
-    if (!m) return null
+    const m = activeMap()
     const px = (wx - m.origin_x) / m.resolution
     const py = m.height - (wy - m.origin_y) / m.resolution
     return {
       x: px * scaleRef.current + panRef.current.x,
       y: py * scaleRef.current + panRef.current.y,
     }
-  }, [])
+  }, [activeMap])
 
   // Converte canvas → coords mundo
   const canvasToWorld = useCallback((cx, cy) => {
-    const m = mapMeta.current
-    if (!m) return null
+    const m = activeMap()
     const px = (cx - panRef.current.x) / scaleRef.current
     const py = (cy - panRef.current.y) / scaleRef.current
     return {
       x: parseFloat((m.origin_x + px * m.resolution).toFixed(3)),
       y: parseFloat((m.origin_y + (m.height - py) * m.resolution).toFixed(3)),
     }
-  }, [])
+  }, [activeMap])
 
   // Desenha tudo no canvas
   const draw = useCallback(() => {
@@ -112,55 +113,48 @@ function MapView({ robotPose, waypoints, onAddWaypoint, onNavigateTo }) {
         ctx.beginPath(); ctx.arc(gx, gy, 0.8, 0, Math.PI * 2); ctx.fill()
       }
 
-    if (!mapMeta.current) {
-      if (showFloor && floorImgRef.current?.complete) {
-        const fi = floorImgRef.current
+    const m = activeMap()  // SLAM ou WAREHOUSE_MAP
+
+    // ── Planta de fundo (warehouse ou slam_map guardado) ──────────────────────
+    if (showFloor && floorImgRef.current?.complete) {
+      const fi = floorImgRef.current
+      ctx.globalAlpha = floorOpacity
+      ctx.imageSmoothingEnabled = true
+      if (savedMapMeta) {
+        // Alinhamento via metadados: usa o sistema de coordenadas activo
+        const sm = savedMapMeta
+        const mapW_world = sm.width  * sm.resolution
+        const mapH_world = sm.height * sm.resolution
+        const cx0 = (sm.origin_x - m.origin_x) / m.resolution * scaleRef.current + panRef.current.x
+        const cy0 = ((m.height) - (sm.origin_y - m.origin_y) / m.resolution - mapH_world / m.resolution) * scaleRef.current + panRef.current.y
+        const cw  = mapW_world / m.resolution * scaleRef.current
+        const ch  = mapH_world / m.resolution * scaleRef.current
+        ctx.drawImage(fi, cx0, cy0, cw, ch)
+      } else {
         const s = Math.min(W / fi.naturalWidth, H / fi.naturalHeight) * 0.88
-        ctx.globalAlpha = floorOpacity
         ctx.drawImage(fi, (W - fi.naturalWidth * s) / 2, (H - fi.naturalHeight * s) / 2,
                       fi.naturalWidth * s, fi.naturalHeight * s)
-        ctx.globalAlpha = 1
       }
+      ctx.globalAlpha = 1
+    }
+
+    // ── Mapa SLAM ao vivo (sobreposto ao fundo) ───────────────────────────────
+    if (mapMeta.current && imgRef.current?.complete) {
+      ctx.imageSmoothingEnabled = false
+      ctx.globalAlpha = showFloor ? 0.82 : 1
+      ctx.drawImage(imgRef.current,
+        panRef.current.x, panRef.current.y,
+        mapMeta.current.width * scaleRef.current,
+        mapMeta.current.height * scaleRef.current)
+      ctx.globalAlpha = 1
+    }
+
+    if (!mapMeta.current && (!showFloor || !floorImgRef.current?.complete)) {
       ctx.fillStyle = '#6b7280'
       ctx.font = '13px system-ui'
       ctx.textAlign = 'center'
       ctx.textBaseline = 'middle'
       ctx.fillText('⏳ Aguardando mapa SLAM…', W / 2, H / 2)
-      return
-    }
-
-    // ── Planta de fundo ───────────────────────────────────────────────────────
-    if (showFloor && floorImgRef.current?.complete) {
-      const m = mapMeta.current, fi = floorImgRef.current
-      ctx.globalAlpha = floorOpacity
-      ctx.imageSmoothingEnabled = true
-      if (savedMapMeta) {
-        const sm = savedMapMeta
-        const scaleX = (sm.width * sm.resolution) / (fi.naturalWidth * m.resolution) * scaleRef.current
-        const scaleY = (sm.height * sm.resolution) / (fi.naturalHeight * m.resolution) * scaleRef.current
-        const cx0 = (sm.origin_x - m.origin_x) / m.resolution * scaleRef.current + panRef.current.x
-        const cy0 = (m.height - (sm.origin_y - m.origin_y) / m.resolution - sm.height * sm.resolution / m.resolution) * scaleRef.current + panRef.current.y
-        ctx.drawImage(fi, cx0, cy0, fi.naturalWidth * scaleX, fi.naturalHeight * scaleY)
-      } else {
-        const pxPerMeter = scaleRef.current / m.resolution
-        const imgW_px = floorScale * pxPerMeter
-        const imgH_px = (fi.naturalHeight / fi.naturalWidth) * imgW_px
-        const cx0 = (floorOffset.x - m.origin_x) / m.resolution * scaleRef.current + panRef.current.x
-        const cy0 = (m.height - (floorOffset.y + floorScale * (fi.naturalHeight / fi.naturalWidth) - m.origin_y) / m.resolution) * scaleRef.current + panRef.current.y
-        ctx.drawImage(fi, cx0, cy0, imgW_px, imgH_px)
-      }
-      ctx.globalAlpha = 1
-    }
-
-    // ── Mapa SLAM ─────────────────────────────────────────────────────────────
-    if (imgRef.current?.complete) {
-      const m = mapMeta.current
-      ctx.imageSmoothingEnabled = false
-      ctx.globalAlpha = showFloor ? 0.85 : 1
-      ctx.drawImage(imgRef.current,
-        panRef.current.x, panRef.current.y,
-        m.width * scaleRef.current, m.height * scaleRef.current)
-      ctx.globalAlpha = 1
     }
 
     // ── Linha de percurso entre waypoints ─────────────────────────────────────
@@ -264,7 +258,7 @@ function MapView({ robotPose, waypoints, onAddWaypoint, onNavigateTo }) {
       ctx.textBaseline = 'bottom'
       ctx.fillText(`${target < 1 ? target * 100 + 'cm' : target + 'm'}`, bx + barPx / 2, by - 3)
     }
-  }, [robotPose, waypoints, worldToCanvas, showFloor, floorOpacity, floorOffset, floorScale, savedMapMeta])
+  }, [robotPose, waypoints, worldToCanvas, activeMap, showFloor, floorOpacity, floorOffset, floorScale, savedMapMeta])
 
   // Carrega fundo: prefere slam_map.png (guardado) > warehouse_map.png (pré-construído)
   useEffect(() => {
@@ -277,7 +271,17 @@ function MapView({ robotPose, waypoints, onAddWaypoint, onNavigateTo }) {
       .then(r => r.json())
       .then(d => {
         if (d.available) loadImg('/slam_map.png', d)
-        else loadImg(WAREHOUSE_MAP.src, WAREHOUSE_MAP)  // warehouse como fundo exacto
+        else {
+          // Warehouse: faz fit automático quando carrega
+          const img = new Image()
+          img.src = WAREHOUSE_MAP.src + '?t=' + Date.now()
+          img.onload = () => {
+            floorImgRef.current = img
+            setSavedMapMeta(WAREHOUSE_MAP)
+            fitMap()   // <-- encaixa imediatamente
+            draw()
+          }
+        }
       })
       .catch(() => loadImg(WAREHOUSE_MAP.src, WAREHOUSE_MAP))
   }, [draw])
@@ -319,17 +323,18 @@ function MapView({ robotPose, waypoints, onAddWaypoint, onNavigateTo }) {
   // Redesenha quando pose ou waypoints mudam
   useEffect(() => { draw() }, [draw, robotPose, waypoints])
 
-  // Ajusta escala/pan para caber o mapa no canvas
+  // Ajusta escala/pan para caber o mapa activo (SLAM ou warehouse estático)
   const fitMap = useCallback(() => {
     const canvas = canvasRef.current
-    const m = mapMeta.current
-    if (!canvas || !m) return
-    const W = canvas.width, H = canvas.height
+    if (!canvas) return
+    const m = activeMap()
+    const W = canvas.width  || canvas.offsetWidth  || 600
+    const H = canvas.height || canvas.offsetHeight || 500
     if (!W || !H) return
     const s = Math.min(W / m.width, H / m.height) * 0.88
     scaleRef.current = s
     panRef.current   = { x: (W - m.width * s) / 2, y: (H - m.height * s) / 2 }
-  }, [])
+  }, [activeMap])
 
   // Redimensiona canvas ao container e re-centra o mapa
   useEffect(() => {
@@ -451,15 +456,13 @@ function MapView({ robotPose, waypoints, onAddWaypoint, onNavigateTo }) {
 
         <div style={{ width: '1px', height: '20px', background: '#2a3142', margin: '0 0.2rem' }} />
 
-        {/* Centrar */}
-        {mapOk && (
-          <button onClick={() => { fitMap(); draw() }}
-            style={{ background: 'transparent', color: '#6b7280', border: '1.5px solid #2a3142',
-                     borderRadius: '6px', padding: '0.3rem 0.65rem', fontSize: '0.75rem',
-                     fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' }}>
-            ⊞ Centrar
-          </button>
-        )}
+        {/* Centrar — disponível sempre */}
+        <button onClick={() => { fitMap(); draw() }}
+          style={{ background: 'transparent', color: '#6b7280', border: '1.5px solid #2a3142',
+                   borderRadius: '6px', padding: '0.3rem 0.65rem', fontSize: '0.75rem',
+                   fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' }}>
+          ⊞ Centrar
+        </button>
 
         {/* Planta / Salvar */}
         <button onClick={() => setShowFloor(v => !v)}
