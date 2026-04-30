@@ -15,7 +15,7 @@ const DEFAULT_CFG = {
   robot:           'default',
   route:           'percurso_initial',
   collect:         true,
-  topics:          ['scan', 'odom', 'imu', 'pose'],
+  topics:          ['scan', 'odom', 'pose'],
   initial_pose:    [0, 0, 0],
   points:          [[0.5, 0.0, 0.0], [1.0, 0.0, 0.0]],
   return_to_start: [0, 0, 0],

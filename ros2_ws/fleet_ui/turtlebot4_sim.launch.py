@@ -11,9 +11,10 @@ Mundos disponíveis: warehouse (padrão), maze, depot
 """
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, TimerAction
+from launch.actions import DeclareLaunchArgument, ExecuteProcess, IncludeLaunchDescription, TimerAction
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch_ros.actions import Node
 
 
 ARGUMENTS = [
@@ -73,8 +74,36 @@ def generate_launch_description():
         )],
     )
 
+    # ── TF publisher: /sim_ground_truth_pose → TF odom→base_link ─────────────
+    # O bridge Gazebo não publica /model/turtlebot4/tf no Harmonic.
+    # Este nó lê o ground truth e publica odom→base_link em /tf para
+    # que SLAM, Nav2 e o orquestrador possam localizar o robô.
+    tf_publisher = TimerAction(
+        period=7.0,
+        actions=[ExecuteProcess(
+            cmd=['python3',
+                 '/home/eduardo/Documentos/ros2_ws/ros2_ws/fleet_ui/tb4_tf_publisher.py'],
+            output='screen',
+        )],
+    )
+
+    # ── Relay: /sim_ground_truth_pose → /odom (odometria para coleta) ─────────
+    # O TB4 não publica /odom directamente — usa sim_ground_truth_pose.
+    odom_relay = TimerAction(
+        period=6.0,
+        actions=[Node(
+            package='topic_tools',
+            executable='relay',
+            name='tb4_odom_relay',
+            arguments=['/sim_ground_truth_pose', '/odom'],
+            output='screen',
+        )],
+    )
+
     ld = LaunchDescription(ARGUMENTS)
     ld.add_action(gazebo)
+    ld.add_action(tf_publisher)
+    ld.add_action(odom_relay)
     ld.add_action(slam)
     ld.add_action(nav2)
     return ld
