@@ -36,6 +36,17 @@ function btn(bg, color, disabled = false) {
   return { background: bg, color, border: `1px solid ${color}`, borderRadius: '8px', padding: '0.45rem 0.9rem', fontSize: '0.85rem', fontWeight: 600, cursor: disabled ? 'not-allowed' : 'pointer', opacity: disabled ? 0.55 : 1, fontFamily: 'inherit' }
 }
 
+// Mapa pré-construído do warehouse (turtlebot4_navigation/maps/warehouse.pgm)
+// Metadados exactos do warehouse.yaml — alinhamento perfeito com o mundo Gazebo
+const WAREHOUSE_MAP = {
+  resolution: 0.03,
+  origin_x:   -15.1,
+  origin_y:   -25.0,
+  width:       1006,
+  height:      1674,
+  src:         '/warehouse_map.png',
+}
+
 const HOUSE_WORLD = { x0: -5.0, y0: -5.0, x1: 7.0, y1: 7.0 }
 
 // ── MapView ───────────────────────────────────────────────────────────────────
@@ -255,21 +266,20 @@ function MapView({ robotPose, waypoints, onAddWaypoint, onNavigateTo }) {
     }
   }, [robotPose, waypoints, worldToCanvas, showFloor, floorOpacity, floorOffset, floorScale, savedMapMeta])
 
-  // Carrega fundo: prefere slam_map.png (mapa guardado) > house_map.png (decorativo)
+  // Carrega fundo: prefere slam_map.png (guardado) > warehouse_map.png (pré-construído)
   useEffect(() => {
-    const loadFloor = (src, meta) => {
+    const loadImg = (src, meta) => {
       const img = new Image()
       img.src = src + '?t=' + Date.now()
       img.onload = () => { floorImgRef.current = img; if (meta) setSavedMapMeta(meta); draw() }
     }
-    // Verifica se existe slam_map.json guardado
     fetch(`${API}/slam_map_meta`)
       .then(r => r.json())
       .then(d => {
-        if (d.available) loadFloor('/slam_map.png', d)
-        else loadFloor('/house_map.png', null)
+        if (d.available) loadImg('/slam_map.png', d)
+        else loadImg(WAREHOUSE_MAP.src, WAREHOUSE_MAP)  // warehouse como fundo exacto
       })
-      .catch(() => loadFloor('/house_map.png', null))
+      .catch(() => loadImg(WAREHOUSE_MAP.src, WAREHOUSE_MAP))
   }, [draw])
 
   // Busca mapa periodicamente
@@ -458,7 +468,7 @@ function MapView({ robotPose, waypoints, onAddWaypoint, onNavigateTo }) {
                    border: `1.5px solid ${showFloor ? '#6ee7b7' : '#2a3142'}`,
                    borderRadius: '6px', padding: '0.3rem 0.65rem', fontSize: '0.75rem',
                    fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' }}>
-          🏠 {savedMapMeta ? 'Fundo' : 'Planta'}
+          🏭 {savedMapMeta ? 'Warehouse' : 'Mapa'}
         </button>
 
         {showFloor && (
