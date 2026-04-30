@@ -12,6 +12,8 @@ Uso:
   ros2 launch ~/Documentos/ros2_ws/ros2_ws/fleet_ui/turtlebot4_sim.launch.py world:=depot
 """
 import os
+import tempfile
+import yaml
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
@@ -19,11 +21,40 @@ from launch.actions import (
     DeclareLaunchArgument,
     ExecuteProcess,
     IncludeLaunchDescription,
+    OpaqueFunction,
     TimerAction,
 )
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
+
+
+def _make_nav2_params(_ctx):
+    """Lê o nav2.yaml do TB4, força enable_stamped_cmd_vel=False e grava num temp file.
+
+    O bridge nav2_minimal_tb4_sim usa geometry_msgs/Twist (não TwistStamped),
+    por isso o Nav2 tem de publicar sem stamp. Fix para Issue #94.
+    """
+    pkg_nav4 = get_package_share_directory('turtlebot4_navigation')
+    src = os.path.join(pkg_nav4, 'config', 'nav2.yaml')
+    with open(src) as f:
+        cfg = yaml.safe_load(f)
+
+    # Percorre todos os nós e desactiva stamped cmd_vel
+    def _patch(d):
+        if isinstance(d, dict):
+            for k, v in d.items():
+                if k == 'enable_stamped_cmd_vel':
+                    d[k] = False
+                else:
+                    _patch(v)
+
+    _patch(cfg)
+
+    tmp = tempfile.NamedTemporaryFile(mode='w', suffix='_nav2.yaml', delete=False)
+    yaml.safe_dump(cfg, tmp)
+    tmp.close()
+    return tmp.name
 
 
 ARGUMENTS = [
@@ -68,43 +99,23 @@ def generate_launch_description():
     )
 
     # ── Nav2 (12s após Gazebo) ────────────────────────────────────────────────
+    # Gera params com enable_stamped_cmd_vel=False (bridge usa Twist, não TwistStamped)
+    nav2_params_file = _make_nav2_params(None)
     nav2 = TimerAction(
         period=12.0,
         actions=[IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
                 os.path.join(pkg_nav4, 'launch', 'nav2.launch.py')
             ),
-            launch_arguments=[('use_sim_time', 'true')],
-        )],
-    )
-
-    # ── TF publisher: sim_ground_truth_pose → odom→base_link ─────────────────
-    # Garante que o orquestrador consegue fazer lookup map→base_link.
-    tf_pub = TimerAction(
-        period=7.0,
-        actions=[ExecuteProcess(
-            cmd=['python3',
-                 '/home/eduardo/Documentos/ros2_ws/ros2_ws/fleet_ui/tb4_tf_publisher.py'],
-            output='screen',
-        )],
-    )
-
-    # ── Relay sim_ground_truth_pose → /odom (para coleta de dados) ────────────
-    odom_relay = TimerAction(
-        period=6.0,
-        actions=[Node(
-            package='topic_tools',
-            executable='relay',
-            name='tb4_odom_relay',
-            arguments=['/sim_ground_truth_pose', '/odom'],
-            output='screen',
+            launch_arguments=[
+                ('use_sim_time', 'true'),
+                ('params_file', nav2_params_file),
+            ],
         )],
     )
 
     ld = LaunchDescription(ARGUMENTS)
     ld.add_action(sim)
-    ld.add_action(odom_relay)
-    ld.add_action(tf_pub)
     ld.add_action(slam)
     ld.add_action(nav2)
     return ld
