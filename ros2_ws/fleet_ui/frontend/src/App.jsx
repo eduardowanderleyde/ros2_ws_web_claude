@@ -59,7 +59,7 @@ function MapView({ robotPose, waypoints, onAddWaypoint, onNavigateTo }) {
   const scaleRef     = useRef(1)
   const panRef       = useRef({ x: 0, y: 0 })
   const dragRef      = useRef(null)
-  const [clickMode, setClickMode]       = useState('waypoint')
+  // clickMode removido — clique sempre adiciona waypoint
   const [mapOk, setMapOk]               = useState(false)
   const [showFloor, setShowFloor]       = useState(true)
   const [floorOpacity, setFloorOpacity] = useState(0.55)
@@ -398,29 +398,15 @@ function MapView({ robotPose, waypoints, onAddWaypoint, onNavigateTo }) {
   const onMouseLeave = () => { dragRef.current = null; setHoverCoord(null) }
   const onMouseUp    = () => { dragRef.current = null }
 
-  // Clique → acção (só botão esquerdo, sem drag)
+  // Clique → sempre adiciona waypoint
   const onClick = e => {
-    if (!mapMeta.current || dragRef.current) return
+    if (dragRef.current) return
     const rect = canvasRef.current.getBoundingClientRect()
     const world = canvasToWorld(e.clientX - rect.left, e.clientY - rect.top)
     if (!world) return
-    if (clickMode === 'waypoint') onAddWaypoint(world.x, world.y)
-    else onNavigateTo(world.x, world.y)
+    onAddWaypoint(world.x, world.y)
   }
 
-  const modeBtn = (mode, label, active_color) => (
-    <button onClick={() => setClickMode(mode)}
-      style={{
-        background: clickMode === mode ? active_color + '22' : 'transparent',
-        color: clickMode === mode ? active_color : '#6b7280',
-        border: `1.5px solid ${clickMode === mode ? active_color : '#2a3142'}`,
-        borderRadius: '6px', padding: '0.3rem 0.75rem',
-        fontSize: '0.75rem', fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit',
-        transition: 'all 0.15s',
-      }}>
-      {label}
-    </button>
-  )
 
   const saveBackground = async () => {
     setSavingMap(true); setSaveMsg(null)
@@ -450,9 +436,10 @@ function MapView({ robotPose, waypoints, onAddWaypoint, onNavigateTo }) {
                     background: '#161a22', borderRadius: '8px', padding: '0.4rem 0.7rem',
                     border: '1px solid #2a3142' }}>
 
-        {/* Modos de clique */}
-        {modeBtn('waypoint', '＋ Waypoint', '#6366f1')}
-        {modeBtn('navigate', '→ Ir agora',  '#6ee7b7')}
+        {/* Clique no mapa → sempre adiciona waypoint */}
+        <span style={{ fontSize: '0.72rem', color: '#4b5563', fontFamily: 'monospace' }}>
+          clique = ＋waypoint
+        </span>
 
         <div style={{ width: '1px', height: '20px', background: '#2a3142', margin: '0 0.2rem' }} />
 
@@ -517,7 +504,7 @@ function MapView({ robotPose, waypoints, onAddWaypoint, onNavigateTo }) {
           borderRadius: '10px',
           border: '1px solid #1e2535',
           boxShadow: '0 4px 24px rgba(0,0,0,0.4)',
-          cursor: clickMode === 'navigate' ? 'crosshair' : 'cell',
+          cursor: 'cell',
           display: 'block',
         }}
       />
@@ -676,9 +663,34 @@ function ConfigForm({ cfg, onChange, currentPose }) {
         {cfg.command === 'record' ? (
           <>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span style={S.label}>Waypoints</span>
-              <span style={{ fontSize: '0.7rem', color: '#6366f1' }}>ou clica no mapa</span>
+              <span style={S.label}>Waypoints <span style={{ color: '#6366f1', fontWeight: 400 }}>— clica no mapa</span></span>
+              <button onClick={() => set('points', [])}
+                style={{ background: 'none', border: 'none', color: '#6b7280', cursor: 'pointer', fontSize: '0.72rem', padding: 0 }}>
+                🗑 limpar
+              </button>
             </div>
+
+            {/* Percursos predefinidos */}
+            <div>
+              <span style={{ ...S.label, marginBottom: '0.4rem' }}>Percursos predefinidos</span>
+              <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
+                {[
+                  { label: 'Linha 1m',   pts: [[1,0,0],[2,0,0],[3,0,0]] },
+                  { label: 'Linha 2m',   pts: [[0,1,0],[0,2,0],[0,3,0]] },
+                  { label: 'Quadrado',   pts: [[1,0,0],[1,1,0],[0,1,0],[0,0,0]] },
+                  { label: 'L',          pts: [[2,0,0],[4,0,0],[4,2,0]] },
+                  { label: 'Zigzag',     pts: [[1,0,0],[2,1,0],[3,0,0],[4,1,0]] },
+                ].map(({ label, pts }) => (
+                  <button key={label} onClick={() => set('points', pts)}
+                    style={{ background: '#0d0f14', border: '1px solid #2a3142', borderRadius: '6px',
+                             color: '#8b92a8', cursor: 'pointer', fontSize: '0.72rem',
+                             padding: '0.25rem 0.55rem', fontFamily: 'inherit' }}>
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
             <WaypointList points={cfg.points} onChange={v => set('points', v)} />
           </>
         ) : (
@@ -757,10 +769,29 @@ export default function App() {
     setCfg(prev => ({ ...prev, points: [...prev.points, [x, y, 0]] }))
   }, [])
 
-  // Navega directamente para ponto clicado no mapa
-  const handleMapNavigateTo = useCallback(async (x, y) => {
-    await fetch(`${API}/go_to_point?x=${x}&y=${y}&yaw=0`, { method: 'POST' }).catch(() => {})
-  }, [])
+  // Navega pela rota definida sem gravar (teste rápido de percurso)
+  const [navigating, setNavigating] = useState(false)
+  const navigateRoute = useCallback(async () => {
+    if (!cfg.points.length) return
+    setNavigating(true)
+    try {
+      for (const [x, y, yaw] of cfg.points) {
+        const r = await fetch(`${API}/go_to_point?x=${x}&y=${y}&yaw=${yaw}`, { method: 'POST' })
+        const d = await r.json()
+        if (!d.success) break
+        // Aguarda robot chegar (polling nav_state)
+        await new Promise(res => {
+          const t = setInterval(async () => {
+            const s = await fetch(`${API}/status`).then(r => r.json()).catch(() => null)
+            if (!s) return
+            const nav = s.robots?.[0]?.nav_state
+            if (nav === 'idle' || nav === 'failed') { clearInterval(t); res() }
+          }, 800)
+          setTimeout(() => { clearInterval(t); res() }, 120000)
+        })
+      }
+    } finally { setNavigating(false) }
+  }, [cfg.points])
 
   const connectRobot = async () => {
     const profile = [...ROBOT_PROFILES, ...extraProfiles].find(p => p.id === selectedProfile)
@@ -973,9 +1004,24 @@ export default function App() {
           )}
           {error && <div style={{ color: '#f87171', fontSize: '0.82rem', padding: '0.5rem 0.75rem', background: 'rgba(248,113,113,0.1)', borderRadius: '6px' }}>{error}</div>}
 
-          <div style={{ display: 'flex', gap: '0.6rem' }}>
-            <button onClick={run} disabled={running || !isConnected}
-              style={btn(running || !isConnected ? '#1a3a2a' : '#065f46', '#6ee7b7', running || !isConnected)}>
+          <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap' }}>
+            {/* Navegar rota — percorre waypoints sem gravar */}
+            {cfg.command === 'record' && (
+              <button onClick={navigateRoute}
+                disabled={navigating || running || !isConnected || !cfg.points.length}
+                title="Percorre os waypoints sem gravar bag — teste rápido"
+                style={btn(
+                  navigating || running || !isConnected || !cfg.points.length ? '#1a1f2e' : '#1e1b4b',
+                  '#a5b4fc',
+                  navigating || running || !isConnected || !cfg.points.length
+                )}>
+                {navigating ? '⏳ Navegando…' : '→ Navegar rota'}
+              </button>
+            )}
+
+            {/* Executar record/replay com coleta */}
+            <button onClick={run} disabled={running || navigating || !isConnected}
+              style={btn(running || navigating || !isConnected ? '#1a3a2a' : '#065f46', '#6ee7b7', running || navigating || !isConnected)}>
               {running ? '⏳ A executar…' : `▶ Executar ${cfg.command}`}
             </button>
             {running && (
