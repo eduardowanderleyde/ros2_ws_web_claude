@@ -50,7 +50,7 @@ const WAREHOUSE_MAP = {
 const HOUSE_WORLD = { x0: -5.0, y0: -5.0, x1: 7.0, y1: 7.0 }
 
 // ── MapView ───────────────────────────────────────────────────────────────────
-function MapView({ robotPose, waypoints, onAddWaypoint, onNavigateTo }) {
+function MapView({ robotPose, waypoints, onAddWaypoint }) {
   // mantém compatibilidade de estado existente + novos
   const canvasRef    = useRef(null)
   const imgRef       = useRef(null)   // SLAM PNG
@@ -331,7 +331,7 @@ function MapView({ robotPose, waypoints, onAddWaypoint, onNavigateTo }) {
     const W = canvas.width  || canvas.offsetWidth  || 600
     const H = canvas.height || canvas.offsetHeight || 500
     if (!W || !H) return
-    const s = Math.min(W / m.width, H / m.height) * 0.88
+    const s = Math.min(W / m.width, H / m.height) * 0.95
     scaleRef.current = s
     panRef.current   = { x: (W - m.width * s) / 2, y: (H - m.height * s) / 2 }
   }, [activeMap])
@@ -361,7 +361,7 @@ function MapView({ robotPose, waypoints, onAddWaypoint, onNavigateTo }) {
     const mx = e.clientX - rect.left
     const my = e.clientY - rect.top
     const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15
-    const newScale = Math.max(0.2, Math.min(scaleRef.current * factor, 50))
+    const newScale = Math.max(0.04, Math.min(scaleRef.current * factor, 80))
     panRef.current = {
       x: mx - (mx - panRef.current.x) * (newScale / scaleRef.current),
       y: my - (my - panRef.current.y) * (newScale / scaleRef.current),
@@ -793,6 +793,9 @@ export default function App() {
     } finally { setNavigating(false) }
   }, [cfg.points])
 
+  // Prop obrigatória do MapView — mantida como no-op (clique já adiciona waypoint)
+  const handleMapNavigateTo = useCallback(() => {}, [])
+
   const connectRobot = async () => {
     const profile = [...ROBOT_PROFILES, ...extraProfiles].find(p => p.id === selectedProfile)
     if (!profile) return
@@ -879,7 +882,7 @@ export default function App() {
     <div style={{ fontFamily: 'system-ui, sans-serif', background: '#0d0f14', color: '#e6e9ef', height: '100vh', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
 
       {/* ── Header ──────────────────────────────────────────────────────────── */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.5rem 1.25rem', borderBottom: '1px solid #2a3142', flexShrink: 0 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.3rem 1rem', borderBottom: '1px solid #2a3142', flexShrink: 0 }}>
         <h1 style={{ margin: 0, fontSize: '1.1rem', color: '#6ee7b7', fontWeight: 700 }}>Fleet UI</h1>
         <div style={{ display: 'flex', fontSize: '0.78rem', fontFamily: 'monospace', alignItems: 'stretch', background: '#161a22', border: '1px solid #2a3142', borderRadius: '8px', overflow: 'hidden' }}>
           {[
@@ -903,7 +906,7 @@ export default function App() {
       </div>
 
       {/* ── Barra de conexão ─────────────────────────────────────────────────── */}
-      <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', padding: '0.4rem 1.25rem', borderBottom: '1px solid #2a3142', flexShrink: 0, position: 'relative' }}>
+      <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', padding: '0.3rem 1rem', borderBottom: '1px solid #2a3142', flexShrink: 0, position: 'relative' }}>
 
         <div ref={panelRef} style={{ position: 'relative' }}>
           <button onClick={() => { setConnPanel(v => !v); setDiscoverPanel(false) }}
@@ -985,10 +988,10 @@ export default function App() {
       </div>
 
       {/* ── Layout 3 colunas ─────────────────────────────────────────────────── */}
-      <div style={{ display: 'grid', gridTemplateColumns: '300px 1fr 340px', gap: '0.75rem', flex: 1, minHeight: 0, padding: '0.75rem 1rem 0.75rem' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '260px 1fr 300px', gap: '0.6rem', flex: 1, minHeight: 0, padding: '0.5rem 0.75rem 0.5rem', overflow: 'hidden' }}>
 
         {/* Coluna esquerda: formulário */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', overflowY: 'auto', paddingRight: '0.25rem' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem', overflowY: 'auto', paddingRight: '0.2rem', minHeight: 0 }}>
           <span style={{ fontSize: '0.8rem', fontWeight: 600, color: '#6ee7b7', textTransform: 'uppercase', letterSpacing: '0.05em', flexShrink: 0 }}>Configuração</span>
           <ConfigForm cfg={cfg} onChange={setCfg} currentPose={pose} onAddWaypoint={handleMapAddWaypoint} />
 
@@ -1031,17 +1034,14 @@ export default function App() {
           </div>
         </div>
 
-        {/* Coluna central: mapa */}
-        <div style={{ display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-          <span style={{ fontSize: '0.8rem', fontWeight: 600, color: '#8b92a8', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.5rem', flexShrink: 0 }}>Mapa</span>
-          <div style={{ flex: 1, minHeight: 0 }}>
-            <MapView
-              robotPose={pose}
-              waypoints={cfg.command === 'record' ? cfg.points : []}
-              onAddWaypoint={handleMapAddWaypoint}
-              onNavigateTo={handleMapNavigateTo}
-            />
-          </div>
+        {/* Coluna central: mapa — ocupa todo o espaço disponível */}
+        <div style={{ display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' }}>
+          <MapView
+            robotPose={pose}
+            waypoints={cfg.command === 'record' ? cfg.points : []}
+            onAddWaypoint={handleMapAddWaypoint}
+            onNavigateTo={handleMapNavigateTo}
+          />
         </div>
 
         {/* Coluna direita: output */}
